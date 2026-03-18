@@ -20,6 +20,7 @@ parts/
 sdist/
 var/
 wheels/
+pip-wheel-metadata/
 share/python-wheels/
 *.egg-info/
 .installed.cfg
@@ -50,6 +51,8 @@ coverage.xml
 .hypothesis/
 .pytest_cache/
 cover/
+# Test statistics 
+junit.xml
 
 # Translations
 *.mo
