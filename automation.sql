@@ -2,11 +2,11 @@
 ----THE BELOW IS BASED ON LSOA POLYGONS
 --SELECT LSOA ID
 drop table tfn.next_lsoa_id;
-create table tfn.next_lsoa_id as select 'E01013174' as lsoa21cd;
+create table tfn.next_lsoa_id as select 'E01013176' as lsoa21cd;
 
 --SELECT LSOA NAME
 drop table tfn.next_lsoa_name;
-create table tfn.next_lsoa_name as select 'North East Lincolnshire 001A';
+create table tfn.next_lsoa_name as select 'North East Lincolnshire 001C';
 
 --CREATE AN EXTERIOR RING OF THE LSOA AND INTERSECT MRN WITH IT, IGNORING MRN LINKS THAT ARE FOOTPATHS AND TRACKS
 --IF ONLY CERTAIN ROADS ARE WANTED FOR CROSSING LSOA'S THIS IS WHERE TO FILTER THEM
@@ -123,7 +123,7 @@ where a.id = b.id;
 ----LEFT COMMENTED SO IT ONLY ADDS IN WHEN NEEDED
 ----USE MRN LINK ID'S FOR THE INSERTION
 --insert into tfn.simplify_level2 select a.* from tfn.edge_table a 
---where a.id in (1105136218,1106431196,1105895220,1107575058,1108296713,1102722808,1100013989,1101654894,1108134056)
+--where a.id in (1100422312,1102137905,1107357467,1107862809,1104723904,1105034828,1103452904,1101091666)
 --  and a.id not in (select id from tfn.simplify_level2);
 
 --CREATE AN ARRAY COLUMN TO PUT THE ORIGINAL ID READY FOR MERGING LATER
@@ -365,11 +365,12 @@ while (nodes_to_check > 0) loop
 	delete from tfn.erroneous_merging where merged_id in (select a.id from tfn.simplify_level2 a, tfn.stops_gtfs2 b where a.source = a.target and st_dwithin(a.geometry,b.geom,3));
 
 	--REMOVING 'ISLAND' links that don't connect to anything
+  --MAKE SURE TO IGNORE TRUNK LINKS, THEIR SIZE CAN SOMETIMES MEAN THEY CAN APPEAR TO BE ISLAND LINKS WHEN NOT
 	drop table tfn.lonely_links;
 	create table tfn.lonely_links as
 		--read in links that are within a 100m buffer of the lsoa being processed
 	  with lonely_links1 AS (
-   			select a.id, a.source, a.target from tfn.simplify_level2 a, tfn.lsoa b where b.lsoa21cd = (select * from tfn.next_lsoa_id) and st_dwithin(a.geometry,b.geom,100)),
+   			select a.id, a.source, a.target from tfn.simplify_level2 a, tfn.lsoa b where a.highway != 'trunk' and b.lsoa21cd = (select * from tfn.next_lsoa_id) and st_dwithin(a.geometry,b.geom,100)),
 	  	--connect up the source counts for those links
      	   lonely_links2 AS (
 			select a.id, a.source, b.source_count, a.target, c.source_count as target_count
@@ -406,6 +407,29 @@ while (nodes_to_check > 0) loop
                                               where id in (select id from tfn.erroneous_merging order by id limit 1));
 		--make sure to repopulate the original_ids column for the re-added links
 		update tfn.simplify_level2 set original_ids = array[id::text] where original_ids is null;
+
+		--rerun the node counts, but this time using what is picked up in the merging errors table
+		drop table tfn.simplify_level3;
+		create table tfn.simplify_level3 as
+		select source, count(source) as source_count from tfn.simplify_level2 
+		 where source in (select source from tfn.edge_table where id::text in (select unnest(original_ids) from tfn.erroneous_merging))
+   			or source in (select target from tfn.edge_table where id::text in (select unnest(original_ids) from tfn.erroneous_merging)) group by source;
+
+		insert into tfn.simplify_level3
+		select a.target, count(a.target) as source_count from tfn.simplify_level2 a
+		where a.target in (select source from tfn.edge_table where id::text in (select unnest(original_ids) from tfn.erroneous_merging))
+		   or a.target in (select target from tfn.edge_table where id::text in (select unnest(original_ids) from tfn.erroneous_merging)) group by a.target;
+
+		drop table tfn.simplify_level4;
+		create table tfn.simplify_level4 as
+		select source, sum(source_count) as source_count from tfn.simplify_level3 
+		 where source not in (select source_to_remove from tfn.oneway_fix_nodes) group by source order by sum(source_count) desc;
+
+		drop table tfn.simplify_level4_node;
+		create table tfn.simplify_level4_node as
+		select source from tfn.simplify_level4 where source_count = 2 order by source limit 1;
+
+		select count(*) from tfn.simplify_level4_node into merge_nodes_to_check;
 
 		--a further loop to handle sorting out links that already have merged sections
 		while (merge_nodes_to_check > 0) loop
@@ -498,16 +522,28 @@ $$
 declare nodes_to_check int := 1;
 		merge_nodes_to_check int := 1;
 begin
-while (nodes_to_check > 0) loop
+	drop table tfn.simplify_level3;
+	create table tfn.simplify_level3 as
+	select source, count(source) as source_count from tfn.simplify_level2 where source != target group by source;
 
-	--FUNCTION CALL TO DO THE NODE COUNT CHECKS READY FOR THE INTERSECTION TEST
-	perform node_checks();
+	insert into tfn.simplify_level3
+	select target, count(target) as source_count from tfn.simplify_level2 where target != source group by target;
 
+	drop table tfn.simplify_level4;
+	create table tfn.simplify_level4 as
+	select source, sum(source_count) as source_count from tfn.simplify_level3 
+	 where source not in (select source_to_remove from tfn.oneway_fix_nodes) group by source order by sum(source_count) desc;
+	--select * from tfn.simplify_level4 where source = 500446875;
+	drop table tfn.simplify_level4_node;
+	create table tfn.simplify_level4_node as
+	select source from tfn.simplify_level4 where source in (select a.nodeid from tfn.node_table a, tfn.lsoa b where b.lsoa21cd = (select * from tfn.next_lsoa_id) and st_dwithin(a.geom,b.geom,0)) and source_count = 2 order by source limit 1;
+	
 	drop table tfn.erroneous_intersections;
 	create table tfn.erroneous_intersections as
 			--find links that are intersecting each other within the lsoa being worked on
 	  with erroneous_intersections as (
-			select a.id as id1, a.original_ids as original_ids1, b.id as id2, b.original_ids as original_ids2, st_intersection(a.geometry,b.geometry) as int_geom 
+			select a.id as id1, a.source as source1, a.target as target1, a.original_ids as original_ids1, 
+		       b.id as id2, b.source as source2, b.target as target2, b.original_ids as original_ids2, st_intersection(a.geometry,b.geometry) as int_geom
 			  from tfn.simplify_level2 a, tfn.simplify_level2 b, tfn.lsoa c
 			 where c.lsoa21nm in (select * from tfn.next_lsoa_name)
 			  and st_dwithin(a.geometry, c.geom, 0)
@@ -515,101 +551,55 @@ while (nodes_to_check > 0) loop
 			  and a.id != b.id and st_dwithin(a.geometry,b.geometry,0)),
 	  		--select these and join up with the node table
 		   erroneous_intersections2 as (
-			select id1, original_ids1, id2, original_ids2, int_geom, nodeid from erroneous_intersections, tfn.node_table where st_dwithin(int_geom,geom,0))
+			select id1, source1, target1, source2, target2, original_ids1, id2, original_ids2, int_geom, nodeid from erroneous_intersections, tfn.node_table where st_dwithin(int_geom,geom,0))
 		    --find the intersections that don't have a nodeid that appears in the node check counts
-	select * from erroneous_intersections2 where nodeid not in (select source from tfn.simplify_level4);
+	select * from erroneous_intersections2 where (nodeid not in (select source from tfn.simplify_level4) or (source1 != source2 and source1 != target2 and target1 != source2 and target1 != target2));
 
 	--delete intersections where they involve oneway fix nodes
 	delete from tfn.erroneous_intersections where nodeid in (select source_to_remove from tfn.oneway_fix_nodes);
 
 	select count(*) from tfn.erroneous_intersections into nodes_to_check;
 
-	--if nodes are found, loop through them one by one, handle the junction and then recheck
 	IF (nodes_to_check > 0) THEN
+		--check the intersections table for cases where more than one link intersects a wrongly merged link
+		with more_than_two_links1 as (select id1, id2 from tfn.erroneous_intersections order by id1 limit 1),
+	 		 more_than_two_links2 as (select a.* from tfn.erroneous_intersections a, more_than_two_links1 b
+							   		   where (a.id1,a.id2) not in (select id1,id2 from more_than_two_links1)
+										 and ((a.id1 = b.id1 and a.id2 != b.id2) or (a.id1 = b.id2 and a.id2 != b.id1)) order by a.id1),
+			 more_than_two_links3 as (select a.id1, a.original_ids1 as original_ids from more_than_two_links2 a, more_than_two_links1 b where a.id1 != b.id1 and a.id1 != b.id2
+									   union
+									  select a.id2, a.original_ids2 as original_ids from more_than_two_links2 a, more_than_two_links1 b where a.id2 != b.id1 and a.id2 != b.id2)
+		insert into tfn.more_than_two_links select * from more_than_two_links3;
+
 		--insert into the processing table the original MRN links that made up the affected links
 		insert into tfn.simplify_level2 
 		select * from tfn.edge_table where id::text in (select unnest(original_ids1) as original_ids from tfn.erroneous_intersections
-        		                                        where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)
+		                                                where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)
+														  and array_length(original_ids1, 1) > 1
 														union
 														select unnest(original_ids2) as original_ids from tfn.erroneous_intersections
-														 where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1));
-		--delete those affected links from the processing table
+														 where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)
+														   and array_length(original_ids2, 1) > 1);
+		--insert any extra links that make up the junction back into the processing table
+		insert into tfn.simplify_level2
+		select * from tfn.edge_table where id::text in (select unnest(original_ids) as original_ids from tfn.more_than_two_links
+			                                                 where array_length(original_ids, 1) > 1);
+
+		--clear out the affected links from the processing table
 		delete from tfn.simplify_level2 where id in (select id1 from tfn.erroneous_intersections where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)
-                                             		union
-											 		select id2 from tfn.erroneous_intersections where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1));
-		--repopulate the original_ids column
+		                                                                                           and array_length(original_ids1, 1) > 1
+		                                             union
+													 select id2 from tfn.erroneous_intersections where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)
+													                                               and array_length(original_ids2, 1) > 1);
+		delete from tfn.simplify_level2 where id in (select id1 from tfn.more_than_two_links where array_length(original_ids, 1) > 1);
+
 		update tfn.simplify_level2 set original_ids = array[id::text] where original_ids is null;
 
+		perform multi_merge_checks();
+
+		select count(*) from tfn.simplify_level4_node into merge_nodes_to_check;
+
 		while (merge_nodes_to_check > 0) loop
-			--rerun the node checks for the source, now using the links identified from the intersection check
-			drop table tfn.simplify_level3;
-			create table tfn.simplify_level3 as
-			select source, count(source) as source_count from tfn.simplify_level2 
-			 where source in (select source from tfn.edge_table where id::text in (select unnest(original_ids1) as original_ids from tfn.erroneous_intersections
-	                                                					   		    where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)
-													                       			union
-													                      		   select unnest(original_ids2) as original_ids from tfn.erroneous_intersections
-													                       			where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1))
-	   			or source in (select target from tfn.edge_table where id::text in (select unnest(original_ids1) as original_ids from tfn.erroneous_intersections
-	                                                					   			where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)
-													                       			union
-													                      		   select unnest(original_ids2) as original_ids from tfn.erroneous_intersections
-													                       			where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)))) group by source;
-
-			--and then rerun for the target
-			insert into tfn.simplify_level3
-			select a.target, count(a.target) as source_count from tfn.simplify_level2 a
-			 where a.target in (select source from tfn.edge_table where id::text in (select unnest(original_ids1) as original_ids from tfn.erroneous_intersections
-	                                                					   			  where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)
-													                       			  union
-													                      			 select unnest(original_ids2) as original_ids from tfn.erroneous_intersections
-													                       			  where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1))
-	   			or a.target in (select target from tfn.edge_table where id::text in (select unnest(original_ids1) as original_ids from tfn.erroneous_intersections
-	                                                					   			  where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)
-													                       			  union
-													                      			 select unnest(original_ids2) as original_ids from tfn.erroneous_intersections
-													                       			  where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)))) group by a.target;
-			
-			--take out any source or target nodes that don't intersect the affected links
-					--unnest the merged id links to join to the original MRN table
-			with err_int_test1 as (select unnest(original_ids1) as original_ids from tfn.erroneous_intersections
-	                        		where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)
-	                        		union
-					       		   select unnest(original_ids2) as original_ids from tfn.erroneous_intersections
-			                		where id1 in (select id1 from tfn.erroneous_intersections order by id1 limit 1)),
-					--get the geometry from the original MRN table
-	     		 err_int_test2 as (select a.original_ids, b.geometry from err_int_test1 a, tfn.edge_table b where a.original_ids::int = b.id),
-	     		 	--get the geometry from the node table
-		 		 err_int_test3 as (select a.source, b.geom from tfn.simplify_level3 a, tfn.node_table b where a.source = b.nodeid),
-		 		 	--get the distance from the node to the original MRN geometry
-		 		 err_int_test4 as (select a.*, st_distance(a.geom, st_union(b.geometry)) as dist from err_int_test3 a, err_int_test2 b group by a.source, a.geom),
-		 		 	--find the ones where the distance is greater than 0
-	     		 err_int_test5 as (select source from err_int_test4 where dist > 0)
-	     		 	--and remove them from the candidate nodes
-			delete from tfn.simplify_level3 where source in (select source from err_int_test5);
-
-			--Count the nodes that are left
-			drop table tfn.simplify_level4;
-			create table tfn.simplify_level4 as
-			select source, sum(source_count) as source_count from tfn.simplify_level3 
-			 where source not in (select source_to_remove from tfn.oneway_fix_nodes) group by source order by sum(source_count) desc;
-
-			--check the node counts from whats left, and find the ones where the source count is greater than 2 (junction)
-			with err_int_test1 as (select a.source, a.source_count, count(b.id) as full_src_count 
-	                         		 from tfn.simplify_level4 a, tfn.simplify_level2 b
-	                        	    where (a.source = b.source or a.source = b.target)
-	                        		group by a.source, a.source_count),
-	     		 err_int_test2 as (select * from err_int_test1 where full_src_count > source_count and source_count = 2)
-	     	--delete them from the candidate nodes
-			delete from tfn.simplify_level4 where source in (select source from err_int_test2);
-
-			--load in a node to merge
-			drop table tfn.simplify_level4_node;
-			create table tfn.simplify_level4_node as
-			select source from tfn.simplify_level4 where source_count = 2 order by source limit 1;
-
-			select count(*) from tfn.simplify_level4_node into merge_nodes_to_check;
-
 			--read in the links that match the merge node
 			with links_to_merge AS (select * from tfn.simplify_level2 where source = (select source from tfn.simplify_level4_node) or target = (select source from tfn.simplify_level4_node)),
 				--get the max id from the processing table and add 1 to assign to the new merged feature
@@ -654,13 +644,15 @@ while (nodes_to_check > 0) loop
 
 			--update the spatial reference for the new feature
 			update tfn.simplify_level2 set geometry = st_setsrid(geometry,27700) where st_srid(geometry) = 0;
+
+			perform multi_merge_checks();
+			select count(*) from tfn.simplify_level4_node into merge_nodes_to_check;
 		end loop;
 	ELSE select count(*) from tfn.erroneous_intersections into nodes_to_check;
 	END IF;
-	
-	end loop;
 end;
 $$;
+
 
 --LASTLY, FIX ANY OF THOSE ONEWAY ISSUES DETECTED EARLIER
 do
@@ -747,6 +739,7 @@ $$;
 --clear out the oneway fix table in case it isn't already
 --truncate table tfn.oneway_fix_nodes;
 --truncate table tfn.oneway_avoid_nodes;
+--truncate table tfn.more_than_two_links;
 
 ----I use this to populate a table to keep track of what LSOA's are complete
 --insert into tfn.lsoa_complete select geom from tfn.lsoa where lsoa21cd in (select * from tfn.next_lsoa_id);
