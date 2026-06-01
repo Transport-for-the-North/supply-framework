@@ -45,5 +45,16 @@ CREATE EXTENSION pgrouting;
 4. Click "Test Connection"
 5. Open DB Manager (Database > DB Manager) to check your new database connection is visible and use
    it to view / import tables from the database directly into QGIS.
-6. Finally, add QGIS bin folder (`C:\Program Files\QGIS {version}\bin`) to the PATH environment
-   variable in your account.
+
+### QGIS CLI Tools
+
+QGIS comes with some command-line tools for interacting with PostGIS, GDAL and others, these are contained
+within the QGIS install location in a bin sub-folder usually `C:\Program Files\QGIS {version}\bin`. The QGIS bin
+folder might want to be added to the PATH environment variable by either:
+
+1. Add the folder to the account level PATH environment variable (**not recommended** as it can cause issues with other packages)
+2. Set the PATH environment variable within a single command-line instance with `set PATH="C:\Program Files\QGIS {version}\bin";%PATH%`
+
+> [!WARNING]
+> Other tools / packages which use GDAL (e.g. geopandas, fiona) can be unusable if the QGIS bin
+> folder is added to the account wide PATH environment variable.
