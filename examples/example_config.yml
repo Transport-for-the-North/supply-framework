@@ -1,0 +1,22 @@
+output_path: path\to\outputs
+
+zones:
+  name: cumbria_zones
+  path: I:\Localisation\input\Cumbria_localisation_zones\zoning_cumbria_local_OA.shp
+  id_col: zone_id
+  zone_name_col: zone_name
+  zone_system_col: zone_syste
+  internal_zone_system: OA
+
+centroids:
+  name: oa_centroids
+  path: I:\Localisation\input\Output_Areas_(December_2021)_EW_Population_Weighted_Centroids_(V4)_\Output_Areas_(December_2021)_EW_Population_Weighted_Centroids_(V4)_.shp
+  id_col: OA21CD
+
+# Database connection parameters
+database:
+  username: username
+  password: password
+  host: localhost
+  database: postgis
+  port: 5432
