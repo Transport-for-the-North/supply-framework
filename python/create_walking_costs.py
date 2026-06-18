@@ -164,7 +164,7 @@ def write_centroids_to_db(
     local_centroids.to_postgis("centroids", conn, if_exists="replace", schema="tfn")
 
 
-def create_mrn_costs(conn: sqlalchemy.Connection) -> gpd.GeoDataFrame:
+def create_network_costs(conn: sqlalchemy.Connection) -> gpd.GeoDataFrame:
     """Function to create distance costs on the mrn network.
 
     It expects a table on the database with OA centroids (population weighted).
@@ -444,13 +444,13 @@ def main() -> None:
         # Connect to DB
         conn = parameters.database.create_engine().connect()
 
-        #### Comment these two functions if the tables are already on the database ####
         ## Select centroids and write to db
         write_centroids_to_db(parameters.zones, parameters.centroids, conn)
 
         ## Create the network costs using mrn (<20kms)
         LOG.info("Creating network costs, this might take several hours.")
-        # mrn_costs = create_mrn_costs(conn)  # this takes about 2.5 hrs for Cumbria OA level 20km
+        #### Comment this function if the tables are already on the database ####
+        network_costs = create_network_costs(conn)  # this takes about 2.5 hrs for Cumbria OA level 20km
         LOG.info("Finished creating network costs.")
 
         #### Load the table if it's already on the database ####
@@ -459,11 +459,6 @@ def main() -> None:
         #        conn,
         #        geom_col="geom"
         #    )
-        network_costs = gpd.read_postgis(
-            sqlalchemy.text("SELECT * FROM tfn.test_nodes_join_select"),
-            conn,
-            geom_col="geom",
-        )
 
         # Network matrix
         network_matrix = (
