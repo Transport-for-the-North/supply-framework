@@ -10,9 +10,9 @@
 
 import logging
 import pathlib
-import pydantic
 import functools
 
+import pydantic
 from pydantic import dataclasses
 import geopandas as gpd
 import pandas as pd
@@ -273,7 +273,7 @@ def create_mrn_costs(conn: sqlalchemy.Connection) -> gpd.GeoDataFrame:
 
 
 def create_crowfly_matrix(conn) -> pd.DataFrame:
-    """Function to create a matrix with crow-fly distances using point locations of nodes nearest centroids."""
+    """Function to create matrix with crow-fly distances using point locations."""
     centroids = gpd.read_postgis(
         sqlalchemy.text("SELECT * FROM tfn.node_centroids"), conn, geom_col="geom"
     )
@@ -285,7 +285,7 @@ def create_crowfly_matrix(conn) -> pd.DataFrame:
 
 
 def check_reverse_cost(matrix):
-    """Function to check that the two halves of the matrix are roughly identical (rounded to 10 decimals)."""
+    """Function to check that the two halves of the matrix are identical (10 decimals)."""
     # Check that costs are the same both ways
     rounded = matrix.round(10)
     diff_matrix = rounded - rounded.T
@@ -305,7 +305,7 @@ def get_largest_factors(ratio_matrix, n=5) -> pd.DataFrame:
     topn = (
         stack[stack["origin"] != stack["target"]]
         .drop_duplicates(["o_min", "o_max"])
-        .nlargest(5, "value")
+        .nlargest(n, "value")
     )
 
     return topn[["origin", "target", "value"]]
@@ -339,13 +339,14 @@ def create_scatterplot(network_matrix, crowfly_matrix, wiggle_factor, output_fol
     plt.savefig(output_folder / "scatterplot.png")
 
 
-def calc_wiggle_factor(network_matrix, crow_matrix) -> np.float:
+def calc_wiggle_factor(network_matrix, crow_matrix) -> np.float64:
     """Function to calculate a wiggle factor to apply to the crow-fly distance matrix."""
     ratio_matrix = network_matrix / crow_matrix
     avg_wiggle_factor = ratio_matrix.stack().mean()
     if ratio_matrix.stack().min() < 1:
         LOG.debug(
-            "The minimum ratio between mrn matrix and crow-fly matrix is %s and smaller than 1, which should not be possible",
+            "The minimum ratio between mrn matrix and crow-fly matrix is %s and smaller than 1, " \
+            "which should not be possible",
             ratio_matrix.stack().min,
         )
     LOG.info(
@@ -448,7 +449,9 @@ def main() -> None:
         write_centroids_to_db(parameters.zones, parameters.centroids, conn)
 
         ## Create the network costs using mrn (<20kms)
+        LOG.info("Creating network costs, this might take several hours.")
         # mrn_costs = create_mrn_costs(conn)  # this takes about 2.5 hrs for Cumbria OA level 20km
+        LOG.info("Finished creating network costs.")
 
         #### Load the table if it's already on the database ####
         # mrn_costs = gpd.read_postgis(
