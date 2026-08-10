@@ -1,10 +1,11 @@
-"""Script to create walking costs using the MRN for a localisation zoning system."""
+"""Script to create walking costs using the MRN for a localisation zoning system.
 
-# Workflow:
-# 1. Get centroids for all Cumbia (internal OAs), check these with the localisation zoning system
-#   1.1. Probably want to start with only Cumbria first, think about the other areas later
-# 2. Spatial join to find nearest node from MRN for each centroid
-# 3. Do the isochrone thing for each node per centroid
+Workflow:
+1. Get centroids for all Cumbia (internal OAs), check these with the localisation zoning system
+  1.1. Probably want to start with only Cumbria first, think about the other areas later
+2. Spatial join to find nearest node from MRN for each centroid
+3. Do the isochrone thing for each node per centroid
+"""
 
 ##### IMPORTS #####
 
