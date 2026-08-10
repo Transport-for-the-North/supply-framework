@@ -405,8 +405,10 @@ def create_final_matrix(conn, network_matrix, output_folder):
     # Check diagonal for zeros
     diag_sum = np.diag(final_matrix).sum()
     if diag_sum != 0:
-        LOG.debug(
-            "The diagonal (intrazonal costs) should be zero but it is: %s", diag_sum
+        warnings.warn(
+            f"The diagonal (intrazonal costs) should be zero but it is: {diag_sum}",
+            RuntimeWarning,
+            stacklevel=2,
         )
 
     # Write some stats to excel
