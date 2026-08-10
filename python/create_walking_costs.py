@@ -1,10 +1,11 @@
-"""Script to create costs using the MRN for a localisation zoning system."""
+"""Script to create costs using the MRN for a localisation zoning system.
 
-# Workflow:
-# 1. Get centroids for all Cumbia (internal OAs), check these with the localisation zoning system
-#   1.1. Probably want to start with only Cumbria first, think about the other areas later
-# 2. Spatial join to find nearest node from MRN for each centroid
-# 3. Do the isochrone thing for each node per centroid
+Workflow:
+1. Get centroids for all Cumbia (internal OAs), check these with the localisation zoning system
+  1.1. Probably want to start with only Cumbria first, think about the other areas later
+2. Spatial join to find nearest node from MRN for each centroid
+3. Do the isochrone thing for each node per centroid
+"""
 
 ##### IMPORTS #####
 
@@ -308,7 +309,7 @@ def create_network_costs(mode_params: dict, zone_name: str, conn: sqlalchemy.Con
     trans.commit()
 
     return gpd.read_postgis(
-        sqlalchemy.text(f"SELECT * FROM tfn.walking_isochrones_centroids_{zone_name}"),
+        sqlalchemy.text(f"tfn.walking_isochrones_centroids_{zone_name}"),
         conn,
         geom_col="geom",
     )
@@ -446,8 +447,10 @@ def create_final_matrix(conn, network_matrix, zone_name: str, output_folder):
     # Check diagonal for zeros
     diag_sum = np.diag(final_matrix).sum()
     if diag_sum != 0:
-        LOG.debug(
-            "The diagonal (intrazonal costs) should be zero but it is: %s", diag_sum
+        warnings.warn(
+            f"The diagonal (intrazonal costs) should be zero but it is: {diag_sum}",
+            RuntimeWarning,
+            stacklevel=2,
         )
 
     # Write some stats to excel
