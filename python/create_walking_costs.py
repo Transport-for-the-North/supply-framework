@@ -1,4 +1,4 @@
-"""Script to create walking costs using the MRN for a localisation zoning system."""
+"""Script to create costs using the MRN for a localisation zoning system."""
 
 # Workflow:
 # 1. Get centroids for all Cumbia (internal OAs), check these with the localisation zoning system
@@ -30,8 +30,28 @@ LOG = logging.getLogger(_NAME)
 _CONFIG_FILE = pathlib.Path(__file__).with_suffix(".yml")
 
 # Distance values
-DISTANCE_CUTOFF = 20000
-NETWORK_RADIUS = DISTANCE_CUTOFF * 1.2
+#DISTANCE_CUTOFF = 20000
+#NETWORK_RADIUS = DISTANCE_CUTOFF * 1.2
+
+# Filtering where clauses
+FOOT = "e.foot <> 'no' AND e.rail = 'no' AND e.highway IS NOT NULL"
+CAR = """
+    e.rail = 'no' AND e.highway IN (
+        'motorway',
+        'motorway_link',
+        'trunk',
+        'trunk_link',
+        'primary',
+        'primary_link',
+        'secondary',
+        'secondary_link',
+        'tertiary',
+        'tertiary_link',
+        'unclassified',
+        'residential'
+	    )
+    """
+
 
 ##### CLASSES & FUNCTIONS #####
 
@@ -122,6 +142,7 @@ class _Config(ctk.BaseConfig):
     """Config for running localisation costs script."""
 
     output_path: pydantic.DirectoryPath
+    mode: str
     zones: Zones
     centroids: GeoFile
     database: DatabaseConfig
@@ -132,6 +153,27 @@ class _Config(ctk.BaseConfig):
         folder = self.output_path / f"{self.zones.name}_localisation_costs"
         folder.mkdir(exist_ok=True)
         return folder
+    
+    @functools.cached_property
+    def mode_params(self) -> dict:
+        """Parameters for the given mode."""
+        if self.mode == "foot":
+            return {"distance_cutoff": 20000,
+                    "network_radius": 20000 * 1.2,
+                    "where_clause": FOOT
+                    }
+        elif self.mode == "car":
+            return {"distance_cutoff": 50000,
+                    "network_radius": 50000 * 1.2,
+                    "where_clause": CAR
+                    }
+        elif self.mode == "bike":
+            return {"distance_cutoff": 50000,
+                    "network_radius": 50000 * 1.2,
+                    "where_clause": FOOT
+                    }
+        else:
+            raise ValueError(f"Unknown mode: {self.mode}")
 
 
 def write_centroids_to_db(
@@ -161,10 +203,10 @@ def write_centroids_to_db(
     )
 
     # Store the centroids in the postgis db (temporary)
-    local_centroids.to_postgis("centroids", conn, if_exists="replace", schema="tfn")
+    local_centroids.to_postgis(f"centroids_{zones.name}", conn, if_exists="replace", schema="tfn")
 
 
-def create_network_costs(conn: sqlalchemy.Connection) -> gpd.GeoDataFrame:
+def create_network_costs(mode_params: dict, zone_name: str, conn: sqlalchemy.Connection) -> gpd.GeoDataFrame:
     """Function to create distance costs on the mrn network.
 
     It expects a table on the database with OA centroids (population weighted).
@@ -183,15 +225,15 @@ def create_network_costs(conn: sqlalchemy.Connection) -> gpd.GeoDataFrame:
     trans = conn.begin()
 
     # Create table with nodes nearest to centroids
-    node_centroids_query = """
-        DROP TABLE IF EXISTS tfn.node_centroids;
-        CREATE TABLE tfn.node_centroids AS
+    node_centroids_query = f"""
+        DROP TABLE IF EXISTS tfn.node_centroids_{zone_name};
+        CREATE TABLE tfn.node_centroids_{zone_name} AS
         SELECT
             c.zone_id AS centroid_id,
             n.nodeid AS node_id,
             n.dist,
             n.geom
-        FROM tfn.centroids c
+        FROM tfn.centroids_{zone_name} c
         CROSS JOIN LATERAL (
             SELECT n.nodeid, n.geom, n.geom <-> c.geometry AS dist
             FROM tfn.node_table AS n
@@ -200,7 +242,7 @@ def create_network_costs(conn: sqlalchemy.Connection) -> gpd.GeoDataFrame:
                 FROM tfn.edge_table e
                 WHERE (e.source = n.nodeid
                 OR e.target = n.nodeid)
-                AND e.foot <> 'no'
+                AND {mode_params['where_clause']}
             )
             ORDER BY dist
             LIMIT 1
@@ -210,36 +252,36 @@ def create_network_costs(conn: sqlalchemy.Connection) -> gpd.GeoDataFrame:
 
     # Create isochrones
     isochrones_query = f"""
-        DROP TABLE IF EXISTS tfn.walking_isochrones;
-        CREATE TABLE tfn.walking_isochrones AS
-        SELECT * FROM tfn.node_centroids n
+        DROP TABLE IF EXISTS tfn.walking_isochrones_{zone_name};
+        CREATE TABLE tfn.walking_isochrones_{zone_name} AS
+        SELECT * FROM tfn.node_centroids_{zone_name} n
         CROSS JOIN LATERAL pgr_drivingDistance(
             format('
             SELECT 
-                a.id,
-                a.source::int4 AS source,
-                a.target::int4 AS target,
-                a.cost::float8 AS cost,
-                a.reverse_cost::float8 AS reverse_cost
-            FROM tfn.edge_table a
+                e.id,
+                e.source::int4 AS source,
+                e.target::int4 AS target,
+                e.cost::float8 AS cost,
+                e.reverse_cost::float8 AS reverse_cost
+            FROM tfn.edge_table e
             WHERE
-                a.foot <> ''no'' 
+                {mode_params['where_clause'].replace("'", "''")}
             AND
                 st_dwithin(
-                    a.geometry,
+                    e.geometry,
                     st_geomfromtext(''%s'', %s),
-                    {NETWORK_RADIUS}
+                    {mode_params['network_radius']}
                 )',
                 ST_AsText(n.geom),
                 ST_SRID(n.geom)
                 )::text,
             array[n.node_id],
-            {DISTANCE_CUTOFF},
+            {mode_params["network_radius"]},
             false,
             true) as route;
 
-        DROP TABLE IF EXISTS tfn.walking_isochrones_centroids;
-        CREATE TABLE tfn.walking_isochrones_centroids AS
+        DROP TABLE IF EXISTS tfn.walking_isochrones_centroids_{zone_name};
+        CREATE TABLE tfn.walking_isochrones_centroids_{zone_name} AS
         SELECT 
             a.centroid_id as start_centroid,
             a.node_id as start_node,
@@ -254,9 +296,9 @@ def create_network_costs(conn: sqlalchemy.Connection) -> gpd.GeoDataFrame:
             b.centroid_id as target_centroid,
             b.dist as node_centroid_dist,
             b.geom
-        FROM tfn.walking_isochrones a
+        FROM tfn.walking_isochrones_{zone_name} a
         INNER JOIN (
-            SELECT * FROM tfn.node_centroids
+            SELECT * FROM tfn.node_centroids_{zone_name}
         ) b
         ON a.node = b.node_id;
     """
@@ -266,16 +308,16 @@ def create_network_costs(conn: sqlalchemy.Connection) -> gpd.GeoDataFrame:
     trans.commit()
 
     return gpd.read_postgis(
-        sqlalchemy.text("SELECT * FROM tfn.walking_isochrones_centroids"),
+        sqlalchemy.text(f"SELECT * FROM tfn.walking_isochrones_centroids_{zone_name}"),
         conn,
         geom_col="geom",
     )
 
 
-def create_crowfly_matrix(conn) -> pd.DataFrame:
+def create_crowfly_matrix(conn, zone_name: str) -> pd.DataFrame:
     """Function to create matrix with crow-fly distances using point locations."""
     centroids = gpd.read_postgis(
-        sqlalchemy.text("SELECT * FROM tfn.node_centroids"), conn, geom_col="geom"
+        sqlalchemy.text(f"SELECT * FROM tfn.node_centroids_{zone_name}"), conn, geom_col="geom"
     )
     centroids = centroids[["centroid_id", "geom"]].set_index("centroid_id")
     crow_matrix = (
@@ -380,7 +422,7 @@ def count_bin_values(final_matrix) -> pd.Series:
     return distance_bin_counts
 
 
-def create_final_matrix(conn, network_matrix, output_folder):
+def create_final_matrix(conn, network_matrix, zone_name: str, output_folder):
     """Function to create final cost matrix.
 
     The final matrix will consist of costs from the network matrix where they exist,
@@ -392,7 +434,7 @@ def create_final_matrix(conn, network_matrix, output_folder):
     # Add crowfly costs using node_centroids (spatial position of nodes but id of centroids)
     # using local (internal zone) centroids or all centroids including external?
     # In that case not using the node positions but the centroid positions
-    crow_matrix = create_crowfly_matrix(conn)
+    crow_matrix = create_crowfly_matrix(conn, zone_name)
 
     wiggle_factor = calc_wiggle_factor(network_matrix, crow_matrix)
 
@@ -428,7 +470,7 @@ def create_final_matrix(conn, network_matrix, output_folder):
     network_matrix.to_csv(output_folder / "network_matrix.csv")
     crow_matrix.to_csv(output_folder / "crow_matrix.csv")
     final_matrix.to_csv(
-        output_folder / f"internal_combined_cost_matrix_{DISTANCE_CUTOFF}_metres.csv"
+        output_folder / "internal_combined_cost_matrix.csv"
     )
 
 
@@ -450,15 +492,16 @@ def main() -> None:
         ## Create the network costs using mrn (<20kms)
         LOG.info("Creating network costs, this might take several hours.")
         #### Comment this function if the tables are already on the database ####
-        network_costs = create_network_costs(conn)  # this takes about 2.5 hrs for Cumbria OA level 20km
-        LOG.info("Finished creating network costs.")
+        network_costs = create_network_costs(parameters.mode_params, parameters.zones.name, conn)  
+            # this takes about 2.5 hrs for Cumbria OA level 20km
+        LOG.info("Finished creating network costs.") 
 
         #### Load the table if it's already on the database ####
-        # mrn_costs = gpd.read_postgis(
-        #        sqlalchemy.text("SELECT * FROM tfn.walking_isochrones_centroids"),
-        #        conn,
-        #        geom_col="geom"
-        #    )
+        network_costs = gpd.read_postgis(
+               sqlalchemy.text(f"SELECT * FROM tfn.walking_isochrones_centroids_{parameters.zones.name}"),
+               conn,
+               geom_col="geom"
+           )
 
         # Network matrix
         network_matrix = (
@@ -472,7 +515,7 @@ def main() -> None:
         )
         check_reverse_cost(network_matrix)
 
-        create_final_matrix(conn, network_matrix, parameters.output_folder)
+        create_final_matrix(conn, network_matrix, parameters.zones.name, parameters.output_folder)
 
 
 ##### MAIN #####
