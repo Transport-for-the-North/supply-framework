@@ -393,11 +393,11 @@ def calc_wiggle_factor(network_matrix, crow_matrix) -> np.float64:
             "The minimum ratio between mrn matrix and crow-fly matrix is smaller than 1.")
     
     LOG.info(
-        "The wiggle factor (mean) is %s and the median is %s. The min is %s and the max is %s.",
-        round(ratio_matrix.stack().mean(), 2),
-        round(ratio_matrix.stack().median(), 2),
-        round(ratio_matrix.stack().min(), 2),
-        round(ratio_matrix.stack().max(), 2),
+        "The wiggle factor (mean) is %.2f and the median is %.2f. The min is %.2f and the max is %.2f.",
+        ratio_matrix.stack().mean(),
+        ratio_matrix.stack().median(),
+        ratio_matrix.stack().min(),
+        ratio_matrix.stack().max(),
     )
     top5 = get_largest_factors(ratio_matrix)
     LOG.info("The largest factors are for the following ID pairs: %s", top5)
@@ -430,11 +430,13 @@ def create_final_matrix(conn, network_matrix, zone_name: str, output_folder):
     and crow-fly costs multiplied with a wiggle factor where there are no network costs.
     It writes all matrices and summary statistics to the given output folder.
     It also writes a scatterplot to that folder.
+
+    The crow-fly costs are calculated for internal zones only, using the centroid ids and 
+    the spatial position of the network nodes linked to the centroids (nearest).
+    The function could be adapted to include external zones for crow-fly costs, 
+    which would require using the centroid positions instead of the network node positions (see module external_costs.py).
     """
 
-    # Add crowfly costs using node_centroids (spatial position of nodes but id of centroids)
-    # using local (internal zone) centroids or all centroids including external?
-    # In that case not using the node positions but the centroid positions
     crow_matrix = create_crowfly_matrix(conn, zone_name)
 
     wiggle_factor = calc_wiggle_factor(network_matrix, crow_matrix)
@@ -489,27 +491,18 @@ def main() -> None:
         # Connect to DB
         engine = parameters.database.create_engine()
         with engine.connect() as conn:
-                
+              
             ## Select centroids and write to db
-#            write_centroids_to_db(parameters.zones, parameters.centroids, conn)
+            write_centroids_to_db(parameters.zones, parameters.centroids, conn)
 
             ## Create the network costs using mrn (<20kms)
             LOG.info("Creating network costs, this might take several hours.")
-            #### Comment this function if the tables are already on the database ####
-#            network_costs = create_network_costs(parameters.mode_params, 
-#                                                 parameters.zones.name, 
-#                                                 conn
-#                                                 )
-              
-                # this takes about 2.5 hrs for Cumbria OA level 20km
-            LOG.info("Finished creating network costs.") 
-
-            #### Load the table if it's already on the database ####
-            network_costs = gpd.read_postgis(
-                sqlalchemy.text(f"SELECT * FROM tfn.walking_isochrones_centroids_{parameters.zones.name}"),
-                conn,
-                geom_col="geom"
-            )
+            network_costs = create_network_costs(parameters.mode_params,
+                                                 parameters.zones.name,
+                                                 conn
+                                                 )
+           # this takes about 2.5 hrs for Cumbria OA level 20km
+            LOG.info("Finished creating network costs.")
 
             # Network matrix
             network_matrix = (
@@ -523,7 +516,11 @@ def main() -> None:
             )
             check_reverse_cost(network_matrix)
 
-            create_final_matrix(conn, network_matrix, parameters.zones.name, parameters.output_folder)
+            create_final_matrix(conn,
+                                network_matrix,
+                                parameters.zones.name,
+                                parameters.output_folder
+                                )
 
 
 ##### MAIN #####
