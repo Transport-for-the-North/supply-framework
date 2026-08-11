@@ -4,7 +4,9 @@ import geopandas as gpd
 
 wiggle_factor = 1.326145264110206
 
-centroids = gpd.read_file(r"D:\normits\data\zones\centroids\cumbria_pop_weighted_centroids.shp")
+centroids = gpd.read_file(
+    r"D:\normits\data\zones\centroids\cumbria_pop_weighted_centroids.shp"
+)
 centroids.rename(columns={"cumbria_lo": "centroid_id"}, inplace=True)
 
 all_centroids = centroids[["centroid_id", "geometry"]].set_index("centroid_id")
@@ -28,6 +30,8 @@ internal_matrix = internal_matrix.set_index("centroid_id")
 internal_matrix.index = internal_matrix.index.astype(int)
 internal_matrix.columns = internal_matrix.columns.astype(int)
 
+external_ids = full_distance_matrix.index.astype(int).tolist()
+
 # Check numbers
 # 3427 total nr
 # 1744 internal
@@ -35,7 +39,16 @@ internal_matrix.columns = internal_matrix.columns.astype(int)
 # 1683+1744=3427
 
 # Build the combined matrix with the internal block and external block
-all_ids = list(dict.fromkeys(internal_ids + [centroid_id for centroid_id in external_ids if centroid_id not in internal_ids]))
+all_ids = list(
+    dict.fromkeys(
+        internal_ids
+        + [
+            centroid_id
+            for centroid_id in external_ids
+            if centroid_id not in internal_ids
+        ]
+    )
+)
 final_matrix = crow_matrix.reindex(index=all_ids, columns=all_ids)
 
 final_matrix.loc[internal_ids, internal_ids] = internal_matrix.loc[
@@ -60,15 +73,19 @@ distance_bin_counts = distance_bins.value_counts().sort_index()
 
 diag_sum = np.diag(final_matrix).sum()
 if diag_sum != 0:
-    print(
-        "The diagonal (intrazonal costs) should be zero but it is: %s", diag_sum
-    )
+    print("The diagonal (intrazonal costs) should be zero but it is: %s", diag_sum)
 
 # Validation checks
 symmetry_error = (final_matrix - final_matrix.T).abs().max().max()
 internal_block_match = (
-    final_matrix.loc[internal_ids, internal_ids] - internal_matrix.loc[internal_ids, internal_ids]
-).abs().max().max()
+    (
+        final_matrix.loc[internal_ids, internal_ids]
+        - internal_matrix.loc[internal_ids, internal_ids]
+    )
+    .abs()
+    .max()
+    .max()
+)
 na_count = final_matrix.isna().sum().sum()
 
 print("Matrix shape:", final_matrix.shape)
@@ -93,6 +110,4 @@ with pd.ExcelWriter(summary_path) as writer:
 # Write matrices
 internal_matrix.to_csv(output_folder + "/network_matrix.csv")
 crow_matrix.to_csv(output_folder + "/crow_matrix.csv")
-final_matrix.to_csv(
-    output_folder + "/full_cost_matrix.csv"
-)
+final_matrix.to_csv(output_folder + "/full_cost_matrix.csv")

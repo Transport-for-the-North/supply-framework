@@ -30,9 +30,6 @@ _NAME = pathlib.Path(__file__).stem
 LOG = logging.getLogger(_NAME)
 _CONFIG_FILE = pathlib.Path(__file__).with_suffix(".yml")
 
-# Distance values
-#DISTANCE_CUTOFF = 20000
-#NETWORK_RADIUS = DISTANCE_CUTOFF * 1.2
 
 # Filtering where clauses
 FOOT = "e.foot <> 'no' AND e.rail = 'no' AND e.highway IS NOT NULL"
@@ -154,25 +151,28 @@ class _Config(ctk.BaseConfig):
         folder = self.output_path / f"{self.zones.name}_localisation_costs"
         folder.mkdir(exist_ok=True)
         return folder
- 
+
     @functools.cached_property
     def mode_params(self) -> dict:
         """Parameters for the given mode."""
         if self.mode == "foot":
-            return {"distance_cutoff": 20000,
-                    "network_radius": 20000 * 1.2,
-                    "where_clause": FOOT
-                    }
+            return {
+                "distance_cutoff": 20000,
+                "network_radius": 20000 * 1.2,
+                "where_clause": FOOT,
+            }
         elif self.mode == "car":
-            return {"distance_cutoff": 50000,
-                    "network_radius": 50000 * 1.2,
-                    "where_clause": CAR
-                    }
+            return {
+                "distance_cutoff": 50000,
+                "network_radius": 50000 * 1.2,
+                "where_clause": CAR,
+            }
         elif self.mode == "bike":
-            return {"distance_cutoff": 50000,
-                    "network_radius": 50000 * 1.2,
-                    "where_clause": FOOT
-                    }
+            return {
+                "distance_cutoff": 50000,
+                "network_radius": 50000 * 1.2,
+                "where_clause": FOOT,
+            }
         else:
             raise ValueError(f"Unknown mode: {self.mode}")
 
@@ -204,11 +204,14 @@ def write_centroids_to_db(
     )
 
     # Store the centroids in the postgis db (temporary)
-    local_centroids.to_postgis(f"centroids_{zones.name}", conn, if_exists="replace", schema="tfn")
+    local_centroids.to_postgis(
+        f"centroids_{zones.name}", conn, if_exists="replace", schema="tfn"
+    )
 
 
-def create_network_costs(mode_params: dict, zone_name: str, conn: sqlalchemy.Connection
-                         ) -> gpd.GeoDataFrame:
+def create_network_costs(
+    mode_params: dict, zone_name: str, conn: sqlalchemy.Connection
+) -> gpd.GeoDataFrame:
     """Function to create distance costs on the mrn network.
 
     It expects a table on the database with OA centroids (population weighted).
@@ -278,7 +281,7 @@ def create_network_costs(mode_params: dict, zone_name: str, conn: sqlalchemy.Con
                 ST_SRID(n.geom)
                 )::text,
             array[n.node_id],
-            {mode_params["network_radius"]},
+            {mode_params['network_radius']},
             false,
             true) as route;
 
@@ -319,9 +322,14 @@ def create_network_costs(mode_params: dict, zone_name: str, conn: sqlalchemy.Con
 def create_crowfly_matrix(conn, zone_name: str) -> pd.DataFrame:
     """Create matrix with crow-fly distances using point locations."""
     centroids = gpd.read_postgis(
-        sqlalchemy.text(f"SELECT centroid_id, geom FROM tfn.node_centroids_{zone_name}"), conn, geom_col="geom", index_col="centroid_id"
+        sqlalchemy.text(
+            f"SELECT centroid_id, geom FROM tfn.node_centroids_{zone_name}"
+        ),
+        conn,
+        geom_col="geom",
+        index_col="centroid_id",
     )
-    
+
     crow_matrix = (
         centroids.geometry.apply(centroids.distance).sort_index().sort_index(axis=1)
     )
@@ -390,8 +398,9 @@ def calc_wiggle_factor(network_matrix, crow_matrix) -> np.float64:
     avg_wiggle_factor = ratio_matrix.stack().mean()
     if ratio_matrix.stack().min() < 1:
         raise ValueError(
-            "The minimum ratio between mrn matrix and crow-fly matrix is smaller than 1.")
-    
+            "The minimum ratio between mrn matrix and crow-fly matrix is smaller than 1."
+        )
+
     LOG.info(
         "The wiggle factor (mean) is %.2f and the median is %.2f. The min is %.2f and the max is %.2f.",
         ratio_matrix.stack().mean(),
@@ -431,9 +440,9 @@ def create_final_matrix(conn, network_matrix, zone_name: str, output_folder):
     It writes all matrices and summary statistics to the given output folder.
     It also writes a scatterplot to that folder.
 
-    The crow-fly costs are calculated for internal zones only, using the centroid ids and 
+    The crow-fly costs are calculated for internal zones only, using the centroid ids and
     the spatial position of the network nodes linked to the centroids (nearest).
-    The function could be adapted to include external zones for crow-fly costs, 
+    The function could be adapted to include external zones for crow-fly costs,
     which would require using the centroid positions instead of the network node positions (see module external_costs.py).
     """
 
@@ -474,9 +483,7 @@ def create_final_matrix(conn, network_matrix, zone_name: str, output_folder):
     # Write matrices
     network_matrix.to_csv(output_folder / "network_matrix.csv")
     crow_matrix.to_csv(output_folder / "crow_matrix.csv")
-    final_matrix.to_csv(
-        output_folder / "internal_combined_cost_matrix.csv"
-    )
+    final_matrix.to_csv(output_folder / "internal_combined_cost_matrix.csv")
 
 
 def main() -> None:
@@ -491,17 +498,15 @@ def main() -> None:
         # Connect to DB
         engine = parameters.database.create_engine()
         with engine.connect() as conn:
-              
             ## Select centroids and write to db
             write_centroids_to_db(parameters.zones, parameters.centroids, conn)
 
             ## Create the network costs using mrn (<20kms)
             LOG.info("Creating network costs, this might take several hours.")
-            network_costs = create_network_costs(parameters.mode_params,
-                                                 parameters.zones.name,
-                                                 conn
-                                                 )
-           # this takes about 2.5 hrs for Cumbria OA level 20km
+            network_costs = create_network_costs(
+                parameters.mode_params, parameters.zones.name, conn
+            )
+            # this takes about 2.5 hrs for Cumbria OA level 20km
             LOG.info("Finished creating network costs.")
 
             # Network matrix
@@ -516,11 +521,9 @@ def main() -> None:
             )
             check_reverse_cost(network_matrix)
 
-            create_final_matrix(conn,
-                                network_matrix,
-                                parameters.zones.name,
-                                parameters.output_folder
-                                )
+            create_final_matrix(
+                conn, network_matrix, parameters.zones.name, parameters.output_folder
+            )
 
 
 ##### MAIN #####
