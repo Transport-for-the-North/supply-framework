@@ -161,20 +161,19 @@ class _Config(ctk.BaseConfig):
                 "network_radius": 20000 * 1.2,
                 "where_clause": FOOT,
             }
-        elif self.mode == "car":
+        if self.mode == "car":
             return {
                 "distance_cutoff": 50000,
                 "network_radius": 50000 * 1.2,
                 "where_clause": CAR,
             }
-        elif self.mode == "bike":
+        if self.mode == "bike":
             return {
                 "distance_cutoff": 50000,
                 "network_radius": 50000 * 1.2,
                 "where_clause": FOOT,
             }
-        else:
-            raise ValueError(f"Unknown mode: {self.mode}")
+        raise ValueError(f"Unknown mode: {self.mode}")
 
 
 def write_centroids_to_db(
@@ -402,7 +401,8 @@ def calc_wiggle_factor(network_matrix, crow_matrix) -> np.float64:
         )
 
     LOG.info(
-        "The wiggle factor (mean) is %.2f and the median is %.2f. The min is %.2f and the max is %.2f.",
+        "The wiggle factor (mean) is %.2f and the median is %.2f. " \
+        "The min is %.2f and the max is %.2f.",
         ratio_matrix.stack().mean(),
         ratio_matrix.stack().median(),
         ratio_matrix.stack().min(),
@@ -443,7 +443,8 @@ def create_final_matrix(conn, network_matrix, zone_name: str, output_folder):
     The crow-fly costs are calculated for internal zones only, using the centroid ids and
     the spatial position of the network nodes linked to the centroids (nearest).
     The function could be adapted to include external zones for crow-fly costs,
-    which would require using the centroid positions instead of the network node positions (see module external_costs.py).
+    which would require using the centroid positions instead of the network node 
+    positions (see module external_costs.py).
     """
 
     crow_matrix = create_crowfly_matrix(conn, zone_name)
