@@ -1,10 +1,9 @@
 """Script to create costs using the MRN for a localisation zoning system.
 
 Workflow:
-1. Get centroids for all Cumbia (internal OAs), check these with the localisation zoning system
-  1.1. Probably want to start with only Cumbria first, think about the other areas later
+1. Get centroids (internal OAs), check with the localisation zoning system
 2. Spatial join to find nearest node from MRN for each centroid
-3. Do the isochrone thing for each node per centroid
+3. Run pgRouting (isochrones) for each node per centroid
 """
 
 ##### IMPORTS #####
@@ -12,6 +11,7 @@ Workflow:
 import logging
 import pathlib
 import functools
+import warnings
 
 import pydantic
 from pydantic import dataclasses
@@ -154,7 +154,7 @@ class _Config(ctk.BaseConfig):
         folder = self.output_path / f"{self.zones.name}_localisation_costs"
         folder.mkdir(exist_ok=True)
         return folder
-    
+ 
     @functools.cached_property
     def mode_params(self) -> dict:
         """Parameters for the given mode."""
@@ -207,7 +207,8 @@ def write_centroids_to_db(
     local_centroids.to_postgis(f"centroids_{zones.name}", conn, if_exists="replace", schema="tfn")
 
 
-def create_network_costs(mode_params: dict, zone_name: str, conn: sqlalchemy.Connection) -> gpd.GeoDataFrame:
+def create_network_costs(mode_params: dict, zone_name: str, conn: sqlalchemy.Connection
+                         ) -> gpd.GeoDataFrame:
     """Function to create distance costs on the mrn network.
 
     It expects a table on the database with OA centroids (population weighted).
@@ -316,19 +317,20 @@ def create_network_costs(mode_params: dict, zone_name: str, conn: sqlalchemy.Con
 
 
 def create_crowfly_matrix(conn, zone_name: str) -> pd.DataFrame:
-    """Function to create matrix with crow-fly distances using point locations."""
+    """Create matrix with crow-fly distances using point locations."""
     centroids = gpd.read_postgis(
-        sqlalchemy.text(f"SELECT * FROM tfn.node_centroids_{zone_name}"), conn, geom_col="geom"
+        sqlalchemy.text(f"SELECT centroid_id, geom FROM tfn.node_centroids_{zone_name}"), conn, geom_col="geom", index_col="centroid_id"
     )
-    centroids = centroids[["centroid_id", "geom"]].set_index("centroid_id")
+    
     crow_matrix = (
         centroids.geometry.apply(centroids.distance).sort_index().sort_index(axis=1)
     )
+
     return crow_matrix
 
 
 def check_reverse_cost(matrix):
-    """Function to check that the two halves of the matrix are identical (10 decimals)."""
+    """Check that the two halves of the matrix are identical (10 decimals)."""
     # Check that costs are the same both ways
     rounded = matrix.round(10)
     diff_matrix = rounded - rounded.T
@@ -338,7 +340,7 @@ def check_reverse_cost(matrix):
 
 
 def get_largest_factors(ratio_matrix, n=5) -> pd.DataFrame:
-    """Function to extract the OD pairs with the highest wiggle factor."""
+    """Extract the OD pairs with the highest wiggle factor."""
     stack = ratio_matrix.stack().reset_index()
     stack.columns = ["origin", "target", "value"]
 
@@ -355,7 +357,7 @@ def get_largest_factors(ratio_matrix, n=5) -> pd.DataFrame:
 
 
 def create_scatterplot(network_matrix, crowfly_matrix, wiggle_factor, output_folder):
-    """Function to create a scatterplot comparing the network matrix with the crow-fly matrix."""
+    """Create a scatterplot comparing the network matrix with the crow-fly matrix."""
     # only where you have real network values
     mask = network_matrix.notna()
 
@@ -387,11 +389,9 @@ def calc_wiggle_factor(network_matrix, crow_matrix) -> np.float64:
     ratio_matrix = network_matrix / crow_matrix
     avg_wiggle_factor = ratio_matrix.stack().mean()
     if ratio_matrix.stack().min() < 1:
-        LOG.debug(
-            "The minimum ratio between mrn matrix and crow-fly matrix is %s and smaller than 1, " \
-            "which should not be possible",
-            ratio_matrix.stack().min,
-        )
+        raise ValueError(
+            "The minimum ratio between mrn matrix and crow-fly matrix is smaller than 1.")
+    
     LOG.info(
         "The wiggle factor (mean) is %s and the median is %s. The min is %s and the max is %s.",
         round(ratio_matrix.stack().mean(), 2),
@@ -487,38 +487,43 @@ def main() -> None:
         LOG.debug("Config\n%s", parameters.to_yaml())
 
         # Connect to DB
-        conn = parameters.database.create_engine().connect()
+        engine = parameters.database.create_engine()
+        with engine.connect() as conn:
+                
+            ## Select centroids and write to db
+#            write_centroids_to_db(parameters.zones, parameters.centroids, conn)
 
-        ## Select centroids and write to db
-        write_centroids_to_db(parameters.zones, parameters.centroids, conn)
+            ## Create the network costs using mrn (<20kms)
+            LOG.info("Creating network costs, this might take several hours.")
+            #### Comment this function if the tables are already on the database ####
+#            network_costs = create_network_costs(parameters.mode_params, 
+#                                                 parameters.zones.name, 
+#                                                 conn
+#                                                 )
+              
+                # this takes about 2.5 hrs for Cumbria OA level 20km
+            LOG.info("Finished creating network costs.") 
 
-        ## Create the network costs using mrn (<20kms)
-        LOG.info("Creating network costs, this might take several hours.")
-        #### Comment this function if the tables are already on the database ####
-        network_costs = create_network_costs(parameters.mode_params, parameters.zones.name, conn)  
-            # this takes about 2.5 hrs for Cumbria OA level 20km
-        LOG.info("Finished creating network costs.") 
-
-        #### Load the table if it's already on the database ####
-        network_costs = gpd.read_postgis(
-               sqlalchemy.text(f"SELECT * FROM tfn.walking_isochrones_centroids_{parameters.zones.name}"),
-               conn,
-               geom_col="geom"
-           )
-
-        # Network matrix
-        network_matrix = (
-            network_costs.pivot(
-                index="start_centroid",
-                columns="target_centroid",
-                values="agg_cost",
+            #### Load the table if it's already on the database ####
+            network_costs = gpd.read_postgis(
+                sqlalchemy.text(f"SELECT * FROM tfn.walking_isochrones_centroids_{parameters.zones.name}"),
+                conn,
+                geom_col="geom"
             )
-            .sort_index()
-            .sort_index(axis=1)
-        )
-        check_reverse_cost(network_matrix)
 
-        create_final_matrix(conn, network_matrix, parameters.zones.name, parameters.output_folder)
+            # Network matrix
+            network_matrix = (
+                network_costs.pivot(
+                    index="start_centroid",
+                    columns="target_centroid",
+                    values="agg_cost",
+                )
+                .sort_index()
+                .sort_index(axis=1)
+            )
+            check_reverse_cost(network_matrix)
+
+            create_final_matrix(conn, network_matrix, parameters.zones.name, parameters.output_folder)
 
 
 ##### MAIN #####
