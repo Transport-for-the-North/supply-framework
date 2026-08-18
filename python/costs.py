@@ -481,6 +481,11 @@ def create_final_matrix(conn, network_matrix, zone_name: str, output_folder):
     # Visualisation
     create_scatterplot(network_matrix, crow_matrix, wiggle_factor, output_folder)
 
+    # Meters to kilometers
+    network_matrix /= 1000
+    crow_matrix /= 1000
+    final_matrix /= 1000
+
     # Write matrices
     network_matrix.to_csv(output_folder / "network_matrix.csv")
     crow_matrix.to_csv(output_folder / "crow_matrix.csv")
