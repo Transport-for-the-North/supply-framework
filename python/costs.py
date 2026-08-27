@@ -363,7 +363,7 @@ def get_largest_factors(ratio_matrix: pd.DataFrame, n: int = 5) -> pd.DataFrame:
     return topn[["origin", "target", "value"]]
 
 
-def create_scatterplot(network_matrix, crowfly_matrix, wiggle_factor, output_folder):
+def create_scatterplot(network_matrix: pd.DataFrame, crowfly_matrix: pd.DataFrame, wiggle_factor: float, output_folder: pathlib.Path) -> None:
     """Create a scatterplot comparing the network matrix with the crow-fly matrix."""
     # only where you have real network values
     mask = network_matrix.notna()
