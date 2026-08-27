@@ -536,7 +536,9 @@ def main() -> None:
 
             network_costs = gpd.read_postgis(
                 sqlalchemy.text(
-                    f"SELECT * FROM tfn.{parameters.mode}_isochrones_centroids_{parameters.zones.name}"
+                    f"SELECT * FROM tfn.{parameters.mode}_isochrones_centroids_{
+                        parameters.zones.name
+                    }"
                 ),
                 conn,
                 geom_col="geom",
