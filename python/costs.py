@@ -346,7 +346,7 @@ def check_reverse_cost(matrix):
         LOG.debug("The costs A->B and B->A are not the same when they should be.")
 
 
-def get_largest_factors(ratio_matrix, n=5) -> pd.DataFrame:
+def get_largest_factors(ratio_matrix: pd.DataFrame, n: int = 5) -> pd.DataFrame:
     """Extract the OD pairs with the highest wiggle factor."""
     stack = ratio_matrix.stack().reset_index()
     stack.columns = ["origin", "target", "value"]
