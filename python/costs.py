@@ -336,7 +336,7 @@ def create_crowfly_matrix(conn: sqlalchemy.Connection, zone_name: str) -> pd.Dat
     return crow_matrix
 
 
-def check_reverse_cost(matrix):
+def check_reverse_cost(matrix: pd.DataFrame) -> None:
     """Check that the two halves of the matrix are identical (10 decimals)."""
     # Check that costs are the same both ways
     rounded = matrix.round(10)
