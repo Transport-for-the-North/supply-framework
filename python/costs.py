@@ -40,21 +40,21 @@ BIKE = """
         )
     """
 CAR = """
-    e.rail = 'no' AND e.highway IN (
-        'motorway',
-        'motorway_link',
-        'trunk',
-        'trunk_link',
-        'primary',
-        'primary_link',
-        'secondary',
-        'secondary_link',
-        'tertiary',
-        'tertiary_link',
-        'unclassified',
-        'residential'
-	    )
-    """
+e.rail = 'no' AND e.highway IN (
+    'motorway',
+    'motorway_link',
+    'trunk',
+    'trunk_link',
+    'primary',
+    'primary_link',
+    'secondary',
+    'secondary_link',
+    'tertiary',
+    'tertiary_link',
+    'unclassified',
+    'residential'
+)
+"""
 
 
 ##### CLASSES & FUNCTIONS #####
@@ -321,7 +321,7 @@ def create_network_costs(
     trans.commit()
 
 
-def create_crowfly_matrix(conn, zone_name: str) -> pd.DataFrame:
+def create_crowfly_matrix(conn: sqlalchemy.Connection, zone_name: str) -> pd.DataFrame:
     """Create matrix with crow-fly distances using point locations."""
     centroids = gpd.read_postgis(
         sqlalchemy.text(
@@ -339,7 +339,7 @@ def create_crowfly_matrix(conn, zone_name: str) -> pd.DataFrame:
     return crow_matrix
 
 
-def check_reverse_cost(matrix):
+def check_reverse_cost(matrix: pd.DataFrame) -> None:
     """Check that the two halves of the matrix are identical (10 decimals)."""
     # Check that costs are the same both ways
     rounded = matrix.round(10)
@@ -349,7 +349,7 @@ def check_reverse_cost(matrix):
         LOG.debug("The costs A->B and B->A are not the same when they should be.")
 
 
-def get_largest_factors(ratio_matrix, n=5) -> pd.DataFrame:
+def get_largest_factors(ratio_matrix: pd.DataFrame, n: int = 5) -> pd.DataFrame:
     """Extract the OD pairs with the highest wiggle factor."""
     stack = ratio_matrix.stack().reset_index()
     stack.columns = ["origin", "target", "value"]
@@ -366,7 +366,7 @@ def get_largest_factors(ratio_matrix, n=5) -> pd.DataFrame:
     return topn[["origin", "target", "value"]]
 
 
-def create_scatterplot(network_matrix, crowfly_matrix, wiggle_factor, output_folder):
+def create_scatterplot(network_matrix: pd.DataFrame, crowfly_matrix: pd.DataFrame, wiggle_factor: float, output_folder: pathlib.Path) -> None:
     """Create a scatterplot comparing the network matrix with the crow-fly matrix."""
     # only where you have real network values
     mask = network_matrix.notna()
@@ -394,7 +394,7 @@ def create_scatterplot(network_matrix, crowfly_matrix, wiggle_factor, output_fol
     plt.savefig(output_folder / "scatterplot.png")
 
 
-def calc_wiggle_factor(network_matrix, crow_matrix) -> np.float64:
+def calc_wiggle_factor(network_matrix: pd.DataFrame, crow_matrix: pd.DataFrame) -> np.float64:
     """Function to calculate a wiggle factor to apply to the crow-fly distance matrix."""
     ratio_matrix = network_matrix / crow_matrix
     avg_wiggle_factor = ratio_matrix.stack().mean()
