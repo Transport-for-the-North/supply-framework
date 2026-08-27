@@ -318,7 +318,7 @@ def create_network_costs(
     )
 
 
-def create_crowfly_matrix(conn, zone_name: str) -> pd.DataFrame:
+def create_crowfly_matrix(conn: sqlalchemy.Connection, zone_name: str) -> pd.DataFrame:
     """Create matrix with crow-fly distances using point locations."""
     centroids = gpd.read_postgis(
         sqlalchemy.text(
