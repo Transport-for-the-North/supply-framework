@@ -255,7 +255,7 @@ def create_network_costs(
                 FROM tfn.edge_table e
                 WHERE (e.source = n.nodeid
                 OR e.target = n.nodeid)
-                AND {mode_params['where_clause']}
+                AND {mode_params["where_clause"]}
             )
             ORDER BY dist
             LIMIT 1
@@ -265,8 +265,8 @@ def create_network_costs(
 
     # Create isochrones
     isochrones_query = f"""
-        DROP TABLE IF EXISTS tfn.{mode_params['mode']}_isochrones_{zone_name};
-        CREATE TABLE tfn.{mode_params['mode']}_isochrones_{zone_name} AS
+        DROP TABLE IF EXISTS tfn.{mode_params["mode"]}_isochrones_{zone_name};
+        CREATE TABLE tfn.{mode_params["mode"]}_isochrones_{zone_name} AS
         SELECT * FROM tfn.node_centroids_{zone_name} n
         CROSS JOIN LATERAL pgr_drivingDistance(
             format('
@@ -278,23 +278,23 @@ def create_network_costs(
                 e.reverse_cost::float8 AS reverse_cost
             FROM tfn.edge_table e
             WHERE
-                {mode_params['where_clause'].replace("'", "''")}
+                {mode_params["where_clause"].replace("'", "''")}
             AND
                 st_dwithin(
                     e.geometry,
                     st_geomfromtext(''%s'', %s),
-                    {mode_params['network_radius']}
+                    {mode_params["network_radius"]}
                 )',
                 ST_AsText(n.geom),
                 ST_SRID(n.geom)
                 )::text,
             array[n.node_id],
-            {mode_params['network_radius']},
+            {mode_params["network_radius"]},
             false,
             true) as route;
 
-        DROP TABLE IF EXISTS tfn.{mode_params['mode']}_isochrones_centroids_{zone_name};
-        CREATE TABLE tfn.{mode_params['mode']}_isochrones_centroids_{zone_name} AS
+        DROP TABLE IF EXISTS tfn.{mode_params["mode"]}_isochrones_centroids_{zone_name};
+        CREATE TABLE tfn.{mode_params["mode"]}_isochrones_centroids_{zone_name} AS
         SELECT 
             a.centroid_id as start_centroid,
             a.node_id as start_node,
@@ -309,7 +309,7 @@ def create_network_costs(
             b.centroid_id as target_centroid,
             b.dist as node_centroid_dist,
             b.geom
-        FROM tfn.{mode_params['mode']}_isochrones_{zone_name} a
+        FROM tfn.{mode_params["mode"]}_isochrones_{zone_name} a
         INNER JOIN (
             SELECT * FROM tfn.node_centroids_{zone_name}
         ) b
