@@ -391,7 +391,7 @@ def create_scatterplot(network_matrix: pd.DataFrame, crowfly_matrix: pd.DataFram
     plt.savefig(output_folder / "scatterplot.png")
 
 
-def calc_wiggle_factor(network_matrix, crow_matrix) -> np.float64:
+def calc_wiggle_factor(network_matrix: pd.DataFrame, crow_matrix: pd.DataFrame) -> np.float64:
     """Function to calculate a wiggle factor to apply to the crow-fly distance matrix."""
     ratio_matrix = network_matrix / crow_matrix
     avg_wiggle_factor = ratio_matrix.stack().mean()
