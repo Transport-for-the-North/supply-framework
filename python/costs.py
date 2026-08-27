@@ -312,7 +312,7 @@ def create_network_costs(
     trans.commit()
 
     return gpd.read_postgis(
-        sqlalchemy.text(f"tfn.walking_isochrones_centroids_{zone_name}"),
+        f"tfn.walking_isochrones_centroids_{zone_name}",
         conn,
         geom_col="geom",
     )
