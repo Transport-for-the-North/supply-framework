@@ -32,7 +32,13 @@ _CONFIG_FILE = pathlib.Path(__file__).with_suffix(".yml")
 
 
 # Filtering where clauses
-FOOT = "e.foot <> 'no' AND e.rail = 'no' AND e.highway IS NOT NULL"
+FOOT = "e.foot <> 'no' AND e.rail = 'no'"
+BIKE = """
+    e.rail = 'no' AND e.highway NOT IN (
+        'motorway',
+        'motorway_link'
+        )
+    """
 CAR = """
     e.rail = 'no' AND e.highway IN (
         'motorway',
@@ -155,23 +161,26 @@ class _Config(ctk.BaseConfig):
     @functools.cached_property
     def mode_params(self) -> dict:
         """Parameters for the given mode."""
-        if self.mode == "foot":
+        if self.mode in ["foot", "walk"]:
             return {
+                "mode": self.mode,
                 "distance_cutoff": 20000,
                 "network_radius": 20000 * 1.2,
                 "where_clause": FOOT,
             }
-        if self.mode == "car":
+        if self.mode in ["car", "drive"]:
             return {
+                "mode": self.mode,
                 "distance_cutoff": 50000,
                 "network_radius": 50000 * 1.2,
                 "where_clause": CAR,
             }
-        if self.mode == "bike":
+        if self.mode in ["bike", "cycle"]:
             return {
+                "mode": self.mode,
                 "distance_cutoff": 50000,
                 "network_radius": 50000 * 1.2,
-                "where_clause": FOOT,
+                "where_clause": BIKE,
             }
         raise ValueError(f"Unknown mode: {self.mode}")
 
@@ -256,8 +265,8 @@ def create_network_costs(
 
     # Create isochrones
     isochrones_query = f"""
-        DROP TABLE IF EXISTS tfn.walking_isochrones_{zone_name};
-        CREATE TABLE tfn.walking_isochrones_{zone_name} AS
+        DROP TABLE IF EXISTS tfn.{mode_params['mode']}_isochrones_{zone_name};
+        CREATE TABLE tfn.{mode_params['mode']}_isochrones_{zone_name} AS
         SELECT * FROM tfn.node_centroids_{zone_name} n
         CROSS JOIN LATERAL pgr_drivingDistance(
             format('
@@ -284,8 +293,8 @@ def create_network_costs(
             false,
             true) as route;
 
-        DROP TABLE IF EXISTS tfn.walking_isochrones_centroids_{zone_name};
-        CREATE TABLE tfn.walking_isochrones_centroids_{zone_name} AS
+        DROP TABLE IF EXISTS tfn.{mode_params['mode']}_isochrones_centroids_{zone_name};
+        CREATE TABLE tfn.{mode_params['mode']}_isochrones_centroids_{zone_name} AS
         SELECT 
             a.centroid_id as start_centroid,
             a.node_id as start_node,
@@ -300,7 +309,7 @@ def create_network_costs(
             b.centroid_id as target_centroid,
             b.dist as node_centroid_dist,
             b.geom
-        FROM tfn.walking_isochrones_{zone_name} a
+        FROM tfn.{mode_params['mode']}_isochrones_{zone_name} a
         INNER JOIN (
             SELECT * FROM tfn.node_centroids_{zone_name}
         ) b
