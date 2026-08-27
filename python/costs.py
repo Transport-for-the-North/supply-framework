@@ -34,21 +34,21 @@ _CONFIG_FILE = pathlib.Path(__file__).with_suffix(".yml")
 # Filtering where clauses
 FOOT = "e.foot <> 'no' AND e.rail = 'no' AND e.highway IS NOT NULL"
 CAR = """
-    e.rail = 'no' AND e.highway IN (
-        'motorway',
-        'motorway_link',
-        'trunk',
-        'trunk_link',
-        'primary',
-        'primary_link',
-        'secondary',
-        'secondary_link',
-        'tertiary',
-        'tertiary_link',
-        'unclassified',
-        'residential'
-	    )
-    """
+e.rail = 'no' AND e.highway IN (
+    'motorway',
+    'motorway_link',
+    'trunk',
+    'trunk_link',
+    'primary',
+    'primary_link',
+    'secondary',
+    'secondary_link',
+    'tertiary',
+    'tertiary_link',
+    'unclassified',
+    'residential'
+)
+"""
 
 
 ##### CLASSES & FUNCTIONS #####
