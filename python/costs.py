@@ -320,12 +320,6 @@ def create_network_costs(
     # Commit to db
     trans.commit()
 
-    return gpd.read_postgis(
-        sqlalchemy.text(f"tfn.walking_isochrones_centroids_{zone_name}"),
-        conn,
-        geom_col="geom",
-    )
-
 
 def create_crowfly_matrix(conn, zone_name: str) -> pd.DataFrame:
     """Create matrix with crow-fly distances using point locations."""
@@ -517,12 +511,18 @@ def main() -> None:
             write_centroids_to_db(parameters.zones, parameters.centroids, conn)
 
             ## Create the network costs using mrn (<20kms)
-            LOG.info("Creating network costs, this might take several hours.")
-            network_costs = create_network_costs(
+            LOG.info("Creating network costs on the database, this might take several hours.")
+            create_network_costs(
                 parameters.mode_params, parameters.zones.name, conn
             )
             # this takes about 2.5 hrs for Cumbria OA level 20km
             LOG.info("Finished creating network costs.")
+
+            network_costs = gpd.read_postgis(
+                    sqlalchemy.text(f"SELECT * FROM tfn.{parameters.mode}_isochrones_centroids_{parameters.zones.name}"),
+                    conn,
+                    geom_col="geom",
+                )
 
             # Network matrix
             network_matrix = (
