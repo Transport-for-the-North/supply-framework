@@ -370,7 +370,12 @@ def get_largest_factors(ratio_matrix: pd.DataFrame, n: int = 5) -> pd.DataFrame:
     return topn[["origin", "target", "value"]]
 
 
-def create_scatterplot(network_matrix: pd.DataFrame, crowfly_matrix: pd.DataFrame, wiggle_factor: float, output_folder: pathlib.Path) -> None:
+def create_scatterplot(
+    network_matrix: pd.DataFrame,
+    crowfly_matrix: pd.DataFrame,
+    wiggle_factor: float,
+    output_folder: pathlib.Path,
+) -> None:
     """Create a scatterplot comparing the network matrix with the crow-fly matrix."""
     # only where you have real network values
     mask = network_matrix.notna()
@@ -398,7 +403,9 @@ def create_scatterplot(network_matrix: pd.DataFrame, crowfly_matrix: pd.DataFram
     plt.savefig(output_folder / "scatterplot.png")
 
 
-def calc_wiggle_factor(network_matrix: pd.DataFrame, crow_matrix: pd.DataFrame) -> np.float64:
+def calc_wiggle_factor(
+    network_matrix: pd.DataFrame, crow_matrix: pd.DataFrame
+) -> np.float64:
     """Function to calculate a wiggle factor to apply to the crow-fly distance matrix."""
     ratio_matrix = network_matrix / crow_matrix
     avg_wiggle_factor = ratio_matrix.stack().mean()
@@ -408,7 +415,7 @@ def calc_wiggle_factor(network_matrix: pd.DataFrame, crow_matrix: pd.DataFrame) 
         )
 
     LOG.info(
-        "The wiggle factor (mean) is %.2f and the median is %.2f. " \
+        "The wiggle factor (mean) is %.2f and the median is %.2f. "
         "The min is %.2f and the max is %.2f.",
         ratio_matrix.stack().mean(),
         ratio_matrix.stack().median(),
@@ -439,7 +446,12 @@ def count_bin_values(final_matrix: pd.DataFrame) -> pd.Series:
     return distance_bin_counts
 
 
-def create_final_matrix(conn: sqlalchemy.Connection, network_matrix: pd.DataFrame, zone_name: str, output_folder: pathlib.Path):
+def create_final_matrix(
+    conn: sqlalchemy.Connection,
+    network_matrix: pd.DataFrame,
+    zone_name: str,
+    output_folder: pathlib.Path,
+):
     """Function to create final cost matrix.
 
     The final matrix will consist of costs from the network matrix where they exist,
@@ -450,7 +462,7 @@ def create_final_matrix(conn: sqlalchemy.Connection, network_matrix: pd.DataFram
     The crow-fly costs are calculated for internal zones only, using the centroid ids and
     the spatial position of the network nodes linked to the centroids (nearest).
     The function could be adapted to include external zones for crow-fly costs,
-    which would require using the centroid positions instead of the network node 
+    which would require using the centroid positions instead of the network node
     positions (see module external_costs.py).
     """
 
@@ -515,18 +527,20 @@ def main() -> None:
             write_centroids_to_db(parameters.zones, parameters.centroids, conn)
 
             ## Create the network costs using mrn (<20kms)
-            LOG.info("Creating network costs on the database, this might take several hours.")
-            create_network_costs(
-                parameters.mode_params, parameters.zones.name, conn
+            LOG.info(
+                "Creating network costs on the database, this might take several hours."
             )
+            create_network_costs(parameters.mode_params, parameters.zones.name, conn)
             # this takes about 2.5 hrs for Cumbria OA level 20km
             LOG.info("Finished creating network costs.")
 
             network_costs = gpd.read_postgis(
-                    sqlalchemy.text(f"SELECT * FROM tfn.{parameters.mode}_isochrones_centroids_{parameters.zones.name}"),
-                    conn,
-                    geom_col="geom",
-                )
+                sqlalchemy.text(
+                    f"SELECT * FROM tfn.{parameters.mode}_isochrones_centroids_{parameters.zones.name}"
+                ),
+                conn,
+                geom_col="geom",
+            )
 
             # Network matrix
             network_matrix = (
