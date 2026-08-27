@@ -346,7 +346,11 @@ def check_reverse_cost(matrix: pd.DataFrame) -> None:
     diff_matrix = rounded - rounded.T
     diff = diff_matrix.stack().sum()
     if diff != 0:
-        LOG.debug("The costs A->B and B->A are not the same when they should be.")
+        warnings.warn(
+            "The costs A->B and B->A are not the same, for walk/cycle they should be.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
 
 def get_largest_factors(ratio_matrix: pd.DataFrame, n: int = 5) -> pd.DataFrame:
@@ -417,7 +421,7 @@ def calc_wiggle_factor(network_matrix: pd.DataFrame, crow_matrix: pd.DataFrame) 
     return avg_wiggle_factor
 
 
-def count_bin_values(final_matrix) -> pd.Series:
+def count_bin_values(final_matrix: pd.DataFrame) -> pd.Series:
     """Function to count values in normits distance bins, write to log file."""
     # Count bins
     bins = [0, 1, 2, 5, 9, 14, 20, final_matrix.stack().max()]
@@ -435,7 +439,7 @@ def count_bin_values(final_matrix) -> pd.Series:
     return distance_bin_counts
 
 
-def create_final_matrix(conn, network_matrix, zone_name: str, output_folder):
+def create_final_matrix(conn: sqlalchemy.Connection, network_matrix: pd.DataFrame, zone_name: str, output_folder: pathlib.Path):
     """Function to create final cost matrix.
 
     The final matrix will consist of costs from the network matrix where they exist,
