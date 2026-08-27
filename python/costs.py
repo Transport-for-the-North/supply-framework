@@ -73,7 +73,7 @@ class GeoFile:
         if not self.path.is_file():
             raise FileNotFoundError(self.path)
 
-        gpd.read_file(self.path, rows=2, columns=self.id_col)
+        gpd.read_file(self.path, rows=2, columns=[self.id_col])
 
     def read(self) -> gpd.GeoDataFrame:
         """Read the full file."""
@@ -219,7 +219,7 @@ def write_centroids_to_db(
 
 def create_network_costs(
     mode_params: dict, zone_name: str, conn: sqlalchemy.Connection
-) -> gpd.GeoDataFrame:
+) -> None:
     """Function to create distance costs on the mrn network.
 
     It expects a table on the database with OA centroids (population weighted).
@@ -451,7 +451,7 @@ def create_final_matrix(
     network_matrix: pd.DataFrame,
     zone_name: str,
     output_folder: pathlib.Path,
-):
+) -> None:
     """Function to create final cost matrix.
 
     The final matrix will consist of costs from the network matrix where they exist,
