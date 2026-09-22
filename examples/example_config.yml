@@ -1,4 +1,5 @@
 output_path: path\to\outputs
+# a subfolder with mode and zone name will be created within the output path
 
 mode: car
 # Options: foot | car | bike
