@@ -186,7 +186,7 @@ class _Config(ctk.BaseConfig):
     @functools.cached_property
     def output_folder(self) -> pathlib.Path:
         """Folder to save outputs to."""
-        folder = self.output_path / f"{self.zones.name}_localisation_costs"
+        folder = self.output_path / self.mode / f"{self.zones.name}_costs"
         folder.mkdir(exist_ok=True)
         return folder
 
