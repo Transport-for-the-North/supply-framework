@@ -32,29 +32,61 @@ _CONFIG_FILE = pathlib.Path(__file__).with_suffix(".yml")
 
 
 # Filtering where clauses
-FOOT = "e.foot <> 'no' AND e.rail = 'no'"
-BIKE = """
-    e.rail = 'no' AND e.highway NOT IN (
-        'motorway',
-        'motorway_link'
+FOOT = {
+    "cost": """
+        e.cost::float8 AS cost,
+        e.reverse_cost::float8 AS reverse_cost
+    """,
+    "join": "",
+    "where": "e.foot <> 'no' AND e.rail = 'no'"
+}
+BIKE = {
+    "cost": """
+        e.cost::float8 AS cost,
+        e.reverse_cost::float8 AS reverse_cost
+    """,
+    "join": "",
+    "where": """
+        e.rail = 'no' AND e.highway NOT IN (
+            'motorway',
+            'motorway_link'
+            )
+    """
+}
+CAR = {
+    "cost": """
+        CASE
+            WHEN e.cost > 0
+            THEN (e.cost * 3.6 / s.avg_speed_forward)::float8
+            ELSE -1
+        END AS cost,
+        CASE
+            WHEN e.reverse_cost > 0
+            THEN (e.reverse_cost * 3.6 / s.avg_speed_backward)::float8
+            ELSE -1
+        END AS reverse_cost
+    """,
+    "join": """
+        LEFT JOIN tfn.mrn_ntwk_transportlink s
+        ON e.id = s.wayid
+    """,
+    "where": """
+        e.rail = 'no' AND e.highway IN (
+            'motorway',
+            'motorway_link',
+            'trunk',
+            'trunk_link',
+            'primary',
+            'primary_link',
+            'secondary',
+            'secondary_link',
+            'tertiary',
+            'tertiary_link',
+            'unclassified',
+            'residential'
         )
     """
-CAR = """
-e.rail = 'no' AND e.highway IN (
-    'motorway',
-    'motorway_link',
-    'trunk',
-    'trunk_link',
-    'primary',
-    'primary_link',
-    'secondary',
-    'secondary_link',
-    'tertiary',
-    'tertiary_link',
-    'unclassified',
-    'residential'
-)
-"""
+}
 
 
 ##### CLASSES & FUNCTIONS #####
@@ -164,23 +196,29 @@ class _Config(ctk.BaseConfig):
         if self.mode in ["foot", "walk"]:
             return {
                 "mode": self.mode,
-                "distance_cutoff": 20000,
+                "max_travel_cost": 20000,  # this is in distance (meters) for walk
                 "network_radius": 20000 * 1.2,
-                "where_clause": FOOT,
+                "cost_query": FOOT["cost"],
+                "where_clause": FOOT["where"],
+                "join_clause": FOOT["join"],
             }
         if self.mode in ["car", "drive"]:
             return {
                 "mode": self.mode,
-                "distance_cutoff": 50000,
+                "max_travel_cost": 7200,  # this is in travel time (seconds) for car / 2hrs
                 "network_radius": 50000 * 1.2,
-                "where_clause": CAR,
+                "cost_query": CAR["cost"],
+                "where_clause": CAR["where"],
+                "join_clause": CAR["join"],
             }
         if self.mode in ["bike", "cycle"]:
             return {
                 "mode": self.mode,
-                "distance_cutoff": 50000,
+                "max_travel_cost": 50000,  # this is in distance (meters) for bike
                 "network_radius": 50000 * 1.2,
-                "where_clause": BIKE,
+                "cost_query": BIKE["cost"],
+                "where_clause": BIKE["where"],
+                "join_clause": BIKE["join"],
             }
         raise ValueError(f"Unknown mode: {self.mode}")
 
@@ -228,7 +266,7 @@ def create_network_costs(
     these must be at the start or end of an edge or they might not be picked up by pgr.
 
     The second query will run the pgr driving distance function to find the cost/distance to each
-    point that is reachable within the distance of the distance_cutoff parameter.
+    point that is reachable within the distance of the max_travel_cost parameter.
     It uses a subset of the edge table within the network_radius of each node_centroid.
     Then the result is joined back to the node_centroid table to keep only the reachable nodes
     that correspond to an OA centroid.
@@ -274,9 +312,9 @@ def create_network_costs(
                 e.id,
                 e.source::int4 AS source,
                 e.target::int4 AS target,
-                e.cost::float8 AS cost,
-                e.reverse_cost::float8 AS reverse_cost
+                {mode_params["cost_query"]}
             FROM tfn.edge_table e
+            {mode_params["join_clause"]}
             WHERE
                 {mode_params["where_clause"].replace("'", "''")}
             AND
@@ -289,7 +327,7 @@ def create_network_costs(
                 ST_SRID(n.geom)
                 )::text,
             array[n.node_id],
-            {mode_params["network_radius"]},
+            {mode_params["max_travel_cost"]},
             false,
             true) as route;
 
