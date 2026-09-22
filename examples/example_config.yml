@@ -1,19 +1,22 @@
 output_path: path\to\outputs
 
+mode: car
+# Options: foot | car | bike
+
 zones:
-  name: cumbria_zones
-  path: I:\Localisation\input\Cumbria_localisation_zones\zoning_cumbria_local_OA.shp
+  name: name_zones
+  path: path\to\zones.shp
   id_col: zone_id
   zone_name_col: zone_name
-  zone_system_col: zone_syste
+  zone_system_col: zone_system
   internal_zone_system: OA
 
 centroids:
   name: oa_centroids
-  path: I:\Localisation\input\Output_Areas_(December_2021)_EW_Population_Weighted_Centroids_(V4)_\Output_Areas_(December_2021)_EW_Population_Weighted_Centroids_(V4)_.shp
+  path: path\to\centroids.shp
   id_col: OA21CD
 
-# Database connection parameters
+# PostGIS database connection parameters
 database:
   username: username
   password: password
