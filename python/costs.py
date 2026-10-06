@@ -21,6 +21,7 @@ import sqlalchemy
 
 import numpy as np
 import matplotlib.pyplot as plt
+import time
 
 import caf.toolkit as ctk
 
@@ -583,13 +584,13 @@ def main() -> None:
         engine = parameters.database.create_engine()
         with engine.connect() as conn:
             ## Select centroids and write to db
-            write_centroids_to_db(parameters.zones, parameters.centroids, conn)
+#            write_centroids_to_db(parameters.zones, parameters.centroids, conn)
 
             ## Create the network costs using mrn (<20kms)
             LOG.info(
                 "Creating network costs on the database, this might take several hours."
             )
-            create_network_costs(parameters.mode_params, parameters.zones.name, conn)
+#            create_network_costs(parameters.mode_params, parameters.zones.name, conn)
             # this takes about 2.5 hrs for Cumbria OA level 20km
             LOG.info("Finished creating network costs.")
 
@@ -602,6 +603,95 @@ def main() -> None:
                 conn,
                 geom_col="geom",
             )
+
+            timings = []
+            origins = network_costs["start_vid"].unique()
+            overall_start = time.perf_counter()
+
+            for i, start_vid in enumerate(origins, start=1):
+                LOG.info("Processing start_vid %d (%d/%d)", start_vid, i, len(origins))
+
+                query_start = time.perf_counter()
+
+                query = f"""
+                    INSERT INTO tfn.car_costs_washington_zones
+                    WITH RECURSIVE route_trace AS (
+                        SELECT
+                            od.start_centroid AS origin_centroid,
+                            od.target_centroid AS destination_centroid,
+                            od.start_node,
+                            od.target_node,
+                            od.agg_cost AS od_agg_cost_seconds,
+                            t.start_vid,
+                            t.node,
+                            t.pred,
+                            t.edge,
+                            t.edge_distance::float8 AS distance_m
+                        FROM tfn.car_isochrones_centroids_washington_zones od
+                        JOIN tfn.car_isochrones_distance_washington_zones t
+                          ON t.start_vid = od.start_vid
+                          AND t.node = od.target_node
+                        WHERE od.start_vid = {start_vid} -- ONE ORIGIN ONLY
+                            AND t.edge <> -1
+                        UNION ALL
+                        SELECT
+                            r.origin_centroid,
+                            r.destination_centroid,
+                            r.start_node,
+                            r.target_node,
+                            r.od_agg_cost_seconds,
+                            p.start_vid,
+                            p.node,
+                            p.pred,
+                            p.edge,
+                            r.distance_m + COALESCE(p.edge_distance, 0)
+                        FROM route_trace r
+                        JOIN tfn.car_isochrones_distance_washington_zones p
+                          ON p.start_vid = r.start_vid
+                         AND p.node = r.pred
+                        WHERE p.edge <> -1
+                    )
+                    SELECT
+                        origin_centroid,
+                        destination_centroid,
+                        start_node,
+                        target_node,
+                        MAX(od_agg_cost_seconds) AS travel_time_sec,
+                        MAX(distance_m) AS distance_m
+                    FROM route_trace
+                    GROUP BY
+                        origin_centroid,
+                        destination_centroid,
+                        start_node,
+                        target_node
+                    ORDER BY target_node;
+                """
+                conn.execute(sqlalchemy.text(query))
+                conn.commit()
+
+                query_time = time.perf_counter() - query_start
+
+                timings.append((start_vid, query_time))
+
+                elapsed = time.perf_counter() - overall_start
+                avg_time = elapsed / i
+
+                remaining = len(origins) - i
+                eta_sec = remaining * avg_time
+
+                LOG.info(
+                    "For %d: " \
+                    "Query time: %.2f sec, Elapsed: %.2f sec, Avg time: %.2f sec, Remaining: %d, ETA: %.2f sec",
+                    start_vid,
+                    query_time,
+                    elapsed,
+                    avg_time,
+                    remaining,
+                    eta_sec,
+                )
+
+            timings.sort(key=lambda x: x[1], reverse=True)
+            LOG.info("Top 5 slowest queries: %s", timings[:5])
 
             # Network matrix
             network_matrix = (
