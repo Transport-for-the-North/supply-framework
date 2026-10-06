@@ -31,7 +31,9 @@ LOG = logging.getLogger(_NAME)
 _CONFIG_FILE = pathlib.Path(__file__).with_suffix(".yml")
 
 
-# Filtering where clauses
+## Filtering where clauses ##
+# Use distance cost for foot / bike (meters)
+# and use time cost for car, using avg speed (kph)
 FOOT = {
     "cost": """
         e.cost::float8 AS cost,
@@ -54,17 +56,32 @@ BIKE = {
     """
 }
 CAR = {
+    # for car cost use time cost based on average speed (kph)
+    # use COALESCE to handle missing average speed values (sometimes 
+    # avgspeed:forward and avg:backward seem swapped)
     "cost": """
         CASE
-            WHEN e.cost > 0
-            THEN (e.cost * 3.6 / s.avg_speed_forward)::float8
-            ELSE -1
-        END AS cost,
-        CASE
-            WHEN e.reverse_cost > 0
-            THEN (e.reverse_cost * 3.6 / s.avg_speed_backward)::float8
-            ELSE -1
-        END AS reverse_cost
+			WHEN e.cost > 0
+			THEN (
+	        	e.cost * 3.6 /
+	        	COALESCE(
+	            	s."avgspeed:forward",
+	            	s."avgspeed:backward"
+	        	)
+	    	)::float8
+			ELSE -1
+		END AS cost,
+		CASE
+			WHEN e.reverse_cost > 0
+			THEN (
+	        	e.reverse_cost * 3.6 /
+	        	COALESCE(
+	            	s."avgspeed:backward",
+	            	s."avgspeed:forward"
+	        	)
+	    	)::float8
+			ELSE -1
+		END AS reverse_cost
     """,
     "join": """
         LEFT JOIN tfn.mrn_ntwk_transportlink s
@@ -196,7 +213,7 @@ class _Config(ctk.BaseConfig):
         if self.mode in ["foot", "walk"]:
             return {
                 "mode": self.mode,
-                "max_travel_cost": 20000,  # this is in distance (meters) for walk
+                "max_travel_cost": 20000,  # this is in distance (meters) for walk / 20km
                 "network_radius": 20000 * 1.2,
                 "cost_query": FOOT["cost"],
                 "where_clause": FOOT["where"],
@@ -214,7 +231,7 @@ class _Config(ctk.BaseConfig):
         if self.mode in ["bike", "cycle"]:
             return {
                 "mode": self.mode,
-                "max_travel_cost": 50000,  # this is in distance (meters) for bike
+                "max_travel_cost": 50000,  # this is in distance (meters) for bike  / 50km
                 "network_radius": 50000 * 1.2,
                 "cost_query": BIKE["cost"],
                 "where_clause": BIKE["where"],
@@ -265,9 +282,11 @@ def create_network_costs(
     The first query will create a table node_centroids with the nodes nearest to each centroid,
     these must be at the start or end of an edge or they might not be picked up by pgr.
 
-    The second query will run the pgr driving distance function to find the cost/distance to each
-    point that is reachable within the distance of the max_travel_cost parameter.
+    The second query will run the pgr driving distance function to find the cost to each
+    point (node) that is reachable within the distance of the max_travel_cost parameter.
     It uses a subset of the edge table within the network_radius of each node_centroid.
+    Option 'directed' == True detects cost and reverse_cost. If reverse_cost is -1 it considers the edge as one-way.
+
     Then the result is joined back to the node_centroid table to keep only the reachable nodes
     that correspond to an OA centroid.
     """
@@ -328,8 +347,8 @@ def create_network_costs(
                 )::text,
             array[n.node_id],
             {mode_params["max_travel_cost"]},
-            false,
-            true) as route;
+            directed => true
+            ) as route;
 
         DROP TABLE IF EXISTS tfn.{mode_params["mode"]}_isochrones_centroids_{zone_name};
         CREATE TABLE tfn.{mode_params["mode"]}_isochrones_centroids_{zone_name} AS
@@ -378,14 +397,16 @@ def create_crowfly_matrix(conn: sqlalchemy.Connection, zone_name: str) -> pd.Dat
 
 
 def check_reverse_cost(matrix: pd.DataFrame) -> None:
-    """Check that the two halves of the matrix are identical (10 decimals)."""
+    """Check if the two halves of the matrix are identical (10 decimals)."""
     # Check that costs are the same both ways
     rounded = matrix.round(10)
     diff_matrix = rounded - rounded.T
     diff = diff_matrix.stack().sum()
+    # TODO: change this to just give back the difference. Where it is called, check value and if mode is not car, give warning if it's not zero,
+    # else just give the difference in log info
     if diff != 0:
         warnings.warn(
-            "The costs A->B and B->A are not the same, for walk/cycle they should be.",
+            "The costs A->B and B->A are not the same, for walk/cycle they should be, for car they can be different.",
             RuntimeWarning,
             stacklevel=2,
         )
