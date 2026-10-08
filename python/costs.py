@@ -65,7 +65,11 @@ TIME_COST_SQL = """
 		END AS reverse_cost
     """
 
+CAR_DISTANCE_MAX_TRAVEL_COST = 50000  # meters (50 km)
+CAR_TIME_MAX_TRAVEL_COST = 7200  # seconds (2hrs)
+
 ##### Classes #####
+
 
 class Mode(ABC):
     """Base class for mode-specific network routing parameters."""
@@ -149,14 +153,16 @@ class CarMode(Mode):
     def mode(self) -> str:
         return "car"
 
-
-# these two should be different if routing by time
     @property
     def max_travel_cost(self) -> float:
-        return 50000
+        if self.route_by == "time":
+            return CAR_TIME_MAX_TRAVEL_COST
+        return CAR_DISTANCE_MAX_TRAVEL_COST
 
     @property
     def network_radius(self) -> float:
+        if self.route_by == "time":
+            return self.max_travel_cost
         return self.max_travel_cost * 1.2
 
     @property
@@ -382,7 +388,8 @@ def create_network_costs(
     The second query will run the pgr driving distance function to find the cost to each
     point (node) that is reachable within the distance of the max_travel_cost parameter.
     It uses a subset of the edge table within the network_radius of each node_centroid.
-    Option 'directed' == True detects cost and reverse_cost. If reverse_cost is -1 it considers the edge as one-way.
+    Option 'directed' == True detects cost and reverse_cost. 
+    If reverse_cost is -1 it considers the edge as one-way.
 
     Then the result is joined back to the node_centroid table to keep only the reachable nodes
     that correspond to an OA centroid.
@@ -501,7 +508,8 @@ def check_reverse_cost(matrix: pd.DataFrame) -> None:
     diff = diff_matrix.stack().sum()
     if diff != 0:
         warnings.warn(
-            "The costs A->B and B->A are not the same, for walk/cycle they should be, for car they can be different.",
+            "The costs A->B and B->A are not the same, for walk/cycle they should be, "
+            "for car they can be different.",
             RuntimeWarning,
             stacklevel=2,
         )
@@ -666,20 +674,14 @@ def create_final_matrix(
 
 
 def insert_network_costs(
-        network_costs: gpd.GeoDataFrame,
-        conn: sqlalchemy.engine.Connection,
-        table_name_costs: str
+    network_costs: gpd.GeoDataFrame,
+    conn: sqlalchemy.engine.Connection,
+    table_name_costs: str,
 ) -> None:
     """Insert network costs into the final cost table."""
     output = network_costs[
-            [
-                "start_centroid",
-                "target_centroid",
-                "start_node",
-                "target_node",
-                "agg_cost"
-            ]
-        ].copy()
+        ["start_centroid", "target_centroid", "start_node", "target_node", "agg_cost"]
+    ].copy()
     output["travel_time_sec"] = pd.Series(dtype=float)
     output = output.rename(
         columns={
@@ -691,9 +693,10 @@ def insert_network_costs(
         conn,
         schema=table_name_costs.split(".")[0],
         if_exists="replace",
-        index=False
+        index=False,
     )
     conn.commit()
+
 
 # Functions for getting distance cost (aggregated) when routed by time
 def get_distance(
@@ -741,17 +744,11 @@ def calculate_agg_distances(
     every node in a shortest-path tree (pg_drivingDistance output).
     """
 
-    pred_lookup = dict(
-        zip(tree["node"], tree["pred"])
-    )
+    pred_lookup = dict(zip(tree["node"], tree["pred"]))
 
-    edge_distance_lookup = dict(
-        zip(tree["node"], tree["edge_distance"])
-    )
+    edge_distance_lookup = dict(zip(tree["node"], tree["edge_distance"]))
 
-    agg_distance = {
-        start_vid: 0.0
-    }
+    agg_distance = {start_vid: 0.0}
 
     tree["agg_distance"] = tree["node"].apply(
         lambda node: get_distance(
@@ -764,11 +761,12 @@ def calculate_agg_distances(
 
     return tree
 
+
 def write_distance_per_origin(
-        network_costs: pd.DataFrame,
-        conn: sqlalchemy.engine.Connection,
-        table_name_isochrones: str,
-        table_name_costs: str
+    network_costs: pd.DataFrame,
+    conn: sqlalchemy.engine.Connection,
+    table_name_isochrones: str,
+    table_name_costs: str,
 ) -> pd.DataFrame:
     """
     Loop through origins to calculate distance along the fastest route for each origin-destination pair.
@@ -805,14 +803,14 @@ def write_distance_per_origin(
                 "target_centroid",
                 "start_node",
                 "target_node",
-                "agg_cost"
-            ]
+                "agg_cost",
+            ],
         ].copy()
         od = od.merge(
             tree[["node", "agg_distance"]],
             left_on="target_node",
             right_on="node",
-            how="left"
+            how="left",
         )
 
         output = od[
@@ -842,13 +840,7 @@ def write_distance_per_origin(
         # write output to final table
         schema = table_name_costs.split(".")[0]
         name = table_name_costs.split(".")[1]
-        output.to_sql(
-            name,
-            conn,
-            schema=schema,
-            if_exists="append",
-            index=False
-        )
+        output.to_sql(name, conn, schema=schema, if_exists="append", index=False)
         conn.commit()
 
         query_time = time.perf_counter() - query_start
@@ -863,8 +855,8 @@ def write_distance_per_origin(
         gc.collect()
 
         LOG.info(
-            "For %d: " \
-            "Query time: %.2f sec, Elapsed: %.2f sec, Avg time: %.2f sec, Remaining: %d, " \
+            "For %d: "
+            "Query time: %.2f sec, Elapsed: %.2f sec, Avg time: %.2f sec, Remaining: %d, "
             "ETA: %.2f sec",
             start_vid,
             query_time,
@@ -873,6 +865,7 @@ def write_distance_per_origin(
             remaining,
             eta_sec,
         )
+
 
 def create_cost_table(
     name: str,
@@ -893,7 +886,7 @@ def create_cost_table(
     conn.execute(sqlalchemy.text(create_table_sql))
     conn.commit()
 
-   
+
 def main() -> None:
     """Create costs for localisation zones."""
     parameters = _Config.load_yaml(_CONFIG_FILE)
@@ -946,9 +939,9 @@ def main() -> None:
                 )
 
             final_costs = pd.read_sql_table(
-                table_name = final_table_name.split(".")[1],
+                table_name=final_table_name.split(".")[1],
                 con=conn,
-                schema=final_table_name.split(".", maxsplit=1)[0]
+                schema=final_table_name.split(".", maxsplit=1)[0],
             )
 
             # Network matrix
