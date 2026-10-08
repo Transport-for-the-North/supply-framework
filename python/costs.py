@@ -388,7 +388,7 @@ def create_network_costs(
     The second query will run the pgr driving distance function to find the cost to each
     point (node) that is reachable within the distance of the max_travel_cost parameter.
     It uses a subset of the edge table within the network_radius of each node_centroid.
-    Option 'directed' == True detects cost and reverse_cost. 
+    Option 'directed' == True detects cost and reverse_cost.
     If reverse_cost is -1 it considers the edge as one-way.
 
     Then the result is joined back to the node_centroid table to keep only the reachable nodes
