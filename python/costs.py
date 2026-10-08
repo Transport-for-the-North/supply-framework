@@ -9,8 +9,10 @@ Workflow:
 ##### IMPORTS #####
 
 import functools
+import gc
 import logging
 import pathlib
+import time
 import warnings
 from abc import ABC, abstractmethod
 from typing import Literal
@@ -22,10 +24,7 @@ import numpy as np
 import pandas as pd
 import pydantic
 import sqlalchemy
-import time
-import gc
 from pydantic import dataclasses
-
 
 ##### CONSTANTS #####s
 
