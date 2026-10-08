@@ -22,6 +22,7 @@ import sqlalchemy
 import numpy as np
 import matplotlib.pyplot as plt
 import time
+import gc
 
 import caf.toolkit as ctk
 
@@ -403,8 +404,6 @@ def check_reverse_cost(matrix: pd.DataFrame) -> None:
     rounded = matrix.round(10)
     diff_matrix = rounded - rounded.T
     diff = diff_matrix.stack().sum()
-    # TODO: change this to just give back the difference. Where it is called, check value and if mode is not car, give warning if it's not zero,
-    # else just give the difference in log info
     if diff != 0:
         warnings.warn(
             "The costs A->B and B->A are not the same, for walk/cycle they should be, for car they can be different.",
@@ -571,6 +570,234 @@ def create_final_matrix(
     final_matrix.to_csv(output_folder / "internal_combined_cost_matrix.csv")
 
 
+def get_distance(
+    node: int,
+    pred_lookup: dict,
+    edge_distance_lookup: dict,
+    agg_distance: dict,
+) -> float:
+    """
+    Calculate cumulative distance from the origin to a node.
+
+    Distances already calculated are stored in agg_distance
+    and reused.
+    """
+
+    path = []
+    current = node
+
+    # Walk backwards until we find a node whose
+    # cumulative distance is already known (origin).
+    while current not in agg_distance:
+        path.append(current)
+        current = pred_lookup[current]
+
+    # Get the known cumulative distance
+    distance = agg_distance[current]
+
+    # Walk forwards through the stored path,
+    # aggregating and caching distances
+    while path:
+        current = path.pop()
+
+        distance += edge_distance_lookup[current]
+        agg_distance[current] = distance
+
+    return distance
+
+
+def calculate_agg_distances(
+    tree: pd.DataFrame,
+    start_vid: int,
+) -> pd.DataFrame:
+    """
+    Calculate distance along the fastest route for
+    every node in a shortest-path tree (pg_drivingDistance output).
+    """
+
+    pred_lookup = dict(
+        zip(tree["node"], tree["pred"])
+    )
+
+    edge_distance_lookup = dict(
+        zip(tree["node"], tree["edge_distance"])
+    )
+
+    agg_distance = {
+        start_vid: 0.0
+    }
+
+    tree["agg_distance"] = tree["node"].apply(
+        lambda node: get_distance(
+            node,
+            pred_lookup,
+            edge_distance_lookup,
+            agg_distance,
+        )
+    )
+
+    return tree
+
+def calculate_distance_per_origin(
+        network_costs: pd.DataFrame,
+        conn: sqlalchemy.engine.Connection,
+        table_name_isochrones: str,
+        table_name_costs: str
+) -> pd.DataFrame:
+    """
+    Loop through origins to calculate distance along the fastest route for each origin-destination pair.
+    """
+    overall_start = time.perf_counter()
+
+    origins = network_costs["start_vid"].unique()
+    for i, start_vid in enumerate(origins, start=1):
+        LOG.info("Processing start_vid %d (%d/%d)", start_vid, i, len(origins))
+
+        query_start = time.perf_counter()
+
+        # Retrieve the shortest-path tree (isochrones) for the current origin (start_vid)
+        query = f"""
+                SELECT
+                    start_vid,
+                    node,
+                    pred,
+                    edge,
+                    edge_distance,
+                    agg_cost
+                FROM {table_name_isochrones}
+                WHERE start_vid = {start_vid} -- ONE ORIGIN ONLY
+        """
+        tree = pd.read_sql(query, conn, params={"start_vid": start_vid})
+        tree = calculate_agg_distances(tree, start_vid)
+
+        # filter the tree to origin-destination pairs we are intested in
+        od = network_costs.loc[
+            network_costs["start_vid"] == start_vid,
+            [
+                "start_centroid",
+                "target_centroid",
+                "start_node",
+                "target_node",
+                "agg_cost"
+            ]
+        ].copy()
+        od = od.merge(
+            tree[["node", "agg_distance"]],
+            left_on="target_node",
+            right_on="node",
+            how="left"
+        )
+
+        output = od[
+            [
+                "start_centroid",
+                "target_centroid",
+                "start_node",
+                "target_node",
+                "agg_cost",
+                "agg_distance",
+            ]
+        ].copy()
+        output = output.rename(
+            columns={
+                "agg_cost": "travel_time_sec",
+                "agg_distance": "distance_m",
+            }
+        )
+        missing = output["distance_m"].isna().sum()
+        if missing:
+            LOG.warning(
+                "%d rows have NULL distance_m for start_vid %d",
+                missing,
+                start_vid,
+            )
+
+        # write output to final table
+        schema = table_name_costs.split(".")[0]
+        name = table_name_costs.split(".")[1]
+        output.to_sql(
+            name,
+            conn,
+            schema=schema,
+            if_exists="append",
+            index=False
+        )
+        conn.commit()
+
+        query_time = time.perf_counter() - query_start
+        elapsed = time.perf_counter() - overall_start
+        avg_time = elapsed / i
+        remaining = len(origins) - i
+        eta_sec = remaining * avg_time
+
+        del tree
+        del od
+        del output
+        gc.collect()
+
+        LOG.info(
+            "For %d: " \
+            "Query time: %.2f sec, Elapsed: %.2f sec, Avg time: %.2f sec, Remaining: %d, " \
+            "ETA: %.2f sec",
+            start_vid,
+            query_time,
+            elapsed,
+            avg_time,
+            remaining,
+            eta_sec,
+        )
+
+
+def insert_network_costs(
+        network_costs: gpd.GeoDataFrame, 
+        conn: sqlalchemy.engine.Connection, 
+        table_name_costs: str
+) -> None:
+    """Insert network costs into the final cost table, for modes bike/walk."""
+    output = network_costs[
+            [
+                "start_centroid",
+                "target_centroid",
+                "start_node",
+                "target_node",
+                "agg_cost"
+            ]
+        ].copy()
+    output["travel_time_sec"] = pd.Series(dtype=float)
+    output = output.rename(
+        columns={
+            "agg_cost": "distance_m",
+        }
+    )
+    output.to_sql(
+        table_name_costs.split(".")[1],
+        conn,
+        schema=table_name_costs.split(".")[0],
+        if_exists="replace",
+        index=False
+    )
+    conn.commit()
+
+def create_cost_table(
+    name: str,
+    conn: sqlalchemy.engine.Connection,
+) -> None:
+    """Create the final cost table."""
+    create_table_sql = f"""
+        DROP TABLE IF EXISTS {name};
+        CREATE TABLE {name} (
+            start_centroid       text,
+            target_centroid      text,
+            start_node			 bigint,
+            target_node			 bigint,
+            travel_time_sec      float8,
+            distance_m           float8
+        );
+    """
+    conn.execute(sqlalchemy.text(create_table_sql))
+    conn.commit()
+
+   
 def main() -> None:
     """Create costs for localisation zones."""
     parameters = _Config.load_yaml(_CONFIG_FILE)
@@ -604,101 +831,35 @@ def main() -> None:
                 geom_col="geom",
             )
 
-            timings = []
-            origins = network_costs["start_vid"].unique()
-            overall_start = time.perf_counter()
+            # for walk and bike this is the final result and can be directly written to the table
+            # for car we still need to calculate the distance cost
+            # create final table
+            final_table_name = f"tfn.costs_{parameters.mode}_{parameters.zones.name}"
+#            create_cost_table(final_table_name, conn)
+#            # this took 1h15 for Washington (236 centroids)
+#            if parameters.mode == "car":
+#                calculate_distance_per_origin(
+#                    network_costs.drop(columns=["geom"]), 
+#                    conn,
+#                    table_name_isochrones=f"tfn.{parameters.mode}_isochrones_distance_{parameters.zones.name}",
+#                    table_name_costs=final_table_name,
+#                )
+#            else:
+#                insert_network_costs(network_costs.drop(columns=["geom"]), conn, final_table_name)
 
-            for i, start_vid in enumerate(origins, start=1):
-                LOG.info("Processing start_vid %d (%d/%d)", start_vid, i, len(origins))
 
-                query_start = time.perf_counter()
-
-                query = f"""
-                    INSERT INTO tfn.car_costs_washington_zones
-                    WITH RECURSIVE route_trace AS (
-                        SELECT
-                            od.start_centroid AS origin_centroid,
-                            od.target_centroid AS destination_centroid,
-                            od.start_node,
-                            od.target_node,
-                            od.agg_cost AS od_agg_cost_seconds,
-                            t.start_vid,
-                            t.node,
-                            t.pred,
-                            t.edge,
-                            t.edge_distance::float8 AS distance_m
-                        FROM tfn.car_isochrones_centroids_washington_zones od
-                        JOIN tfn.car_isochrones_distance_washington_zones t
-                          ON t.start_vid = od.start_vid
-                          AND t.node = od.target_node
-                        WHERE od.start_vid = {start_vid} -- ONE ORIGIN ONLY
-                            AND t.edge <> -1
-                        UNION ALL
-                        SELECT
-                            r.origin_centroid,
-                            r.destination_centroid,
-                            r.start_node,
-                            r.target_node,
-                            r.od_agg_cost_seconds,
-                            p.start_vid,
-                            p.node,
-                            p.pred,
-                            p.edge,
-                            r.distance_m + COALESCE(p.edge_distance, 0)
-                        FROM route_trace r
-                        JOIN tfn.car_isochrones_distance_washington_zones p
-                          ON p.start_vid = r.start_vid
-                         AND p.node = r.pred
-                        WHERE p.edge <> -1
-                    )
-                    SELECT
-                        origin_centroid,
-                        destination_centroid,
-                        start_node,
-                        target_node,
-                        MAX(od_agg_cost_seconds) AS travel_time_sec,
-                        MAX(distance_m) AS distance_m
-                    FROM route_trace
-                    GROUP BY
-                        origin_centroid,
-                        destination_centroid,
-                        start_node,
-                        target_node
-                    ORDER BY target_node;
-                """
-                conn.execute(sqlalchemy.text(query))
-                conn.commit()
-
-                query_time = time.perf_counter() - query_start
-
-                timings.append((start_vid, query_time))
-
-                elapsed = time.perf_counter() - overall_start
-                avg_time = elapsed / i
-
-                remaining = len(origins) - i
-                eta_sec = remaining * avg_time
-
-                LOG.info(
-                    "For %d: " \
-                    "Query time: %.2f sec, Elapsed: %.2f sec, Avg time: %.2f sec, Remaining: %d, ETA: %.2f sec",
-                    start_vid,
-                    query_time,
-                    elapsed,
-                    avg_time,
-                    remaining,
-                    eta_sec,
-                )
-
-            timings.sort(key=lambda x: x[1], reverse=True)
-            LOG.info("Top 5 slowest queries: %s", timings[:5])
+            final_costs = pd.read_sql_table(
+                table_name = final_table_name.split(".")[1],
+                con=conn,
+                schema=final_table_name.split(".")[0]
+            )
 
             # Network matrix
             network_matrix = (
-                network_costs.pivot(
+                final_costs.pivot(
                     index="start_centroid",
                     columns="target_centroid",
-                    values="agg_cost",
+                    values="distance_m",
                 )
                 .sort_index()
                 .sort_index(axis=1)
