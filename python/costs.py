@@ -8,21 +8,24 @@ Workflow:
 
 ##### IMPORTS #####
 
+import functools
 import logging
 import pathlib
-import functools
 import warnings
-
-import pydantic
-from pydantic import dataclasses
-import geopandas as gpd
-import pandas as pd
-import sqlalchemy
-
-import numpy as np
-import matplotlib.pyplot as plt
+from abc import ABC, abstractmethod
+from typing import Literal
 
 import caf.toolkit as ctk
+import geopandas as gpd
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import pydantic
+import sqlalchemy
+import time
+import gc
+from pydantic import dataclasses
+
 
 ##### CONSTANTS #####s
 
@@ -36,22 +39,129 @@ COST_SQL = """
         e.cost::float8 AS cost,
         e.reverse_cost::float8 AS reverse_cost
     """
-FOOT = {
-    "cost": COST_SQL,
-    "where": "e.foot <> 'no' AND e.rail = 'no'"
-}
-BIKE = {
-    "cost": COST_SQL,
-    "where": """
-        e.rail = 'no' AND e.highway NOT IN (
-            'motorway',
-            'motorway_link'
-            )
+
+TIME_COST_SQL = """
+        CASE
+			WHEN e.cost > 0
+			THEN (
+	        	e.cost * 3.6 /
+	        	COALESCE(
+	            	s."avgspeed:forward",
+	            	s."avgspeed:backward"
+	        	)
+	    	)::float8
+			ELSE -1
+		END AS cost,
+		CASE
+			WHEN e.reverse_cost > 0
+			THEN (
+	        	e.reverse_cost * 3.6 /
+	        	COALESCE(
+	            	s."avgspeed:backward",
+	            	s."avgspeed:forward"
+	        	)
+	    	)::float8
+			ELSE -1
+		END AS reverse_cost
     """
-}
-CAR = {
-    "cost": COST_SQL,
-    "where": """
+
+##### Classes #####
+
+class Mode(ABC):
+    """Base class for mode-specific network routing parameters."""
+
+    aliases: tuple[str, ...] = ()
+    allowed_route_by: tuple[str, ...] = ("distance",)
+
+    def __init__(self, route_by: str = "distance") -> None:
+        self.route_by = route_by.lower()
+        if self.route_by not in self.allowed_route_by:
+            raise ValueError(
+                f"route_by='{self.route_by}' is not supported for mode '{self.mode}'. "
+                f"Allowed values: {', '.join(self.allowed_route_by)}"
+            )
+
+    @property
+    @abstractmethod
+    def mode(self) -> str:
+        """Mode name used in database table names."""
+
+    @property
+    @abstractmethod
+    def max_travel_cost(self) -> float:
+        """Maximum path cost for pgr_drivingDistance."""
+
+    @property
+    @abstractmethod
+    def network_radius(self) -> float:
+        """Radius for pre-filtering network before routing."""
+
+    @property
+    def cost_query(self) -> str:
+        """SQL fragment defining cost."""
+        return COST_SQL
+
+    @property
+    def join_clause(self) -> str:
+        """Optional SQL JOIN clause for getting speeds (for routing by time)."""
+        return ""
+
+    @property
+    @abstractmethod
+    def where_clause(self) -> str:
+        """SQL WHERE clause for filtering allowed edges by mode."""
+
+    @classmethod
+    def matches(cls, mode: str) -> bool:
+        """Return True if the provided mode maps to this class."""
+        return mode.lower() in cls.aliases
+
+
+class FootMode(Mode):
+    """Walking mode configuration."""
+
+    aliases = ("foot", "walk")
+
+    @property
+    def mode(self) -> str:
+        return "foot"
+
+    @property
+    def max_travel_cost(self) -> float:
+        return 20000
+
+    @property
+    def network_radius(self) -> float:
+        return self.max_travel_cost * 1.2
+
+    @property
+    def where_clause(self) -> str:
+        return "e.foot <> 'no' AND e.rail = 'no'"
+
+
+class CarMode(Mode):
+    """Car mode configuration."""
+
+    aliases = ("car", "drive")
+    allowed_route_by = ("distance", "time")
+
+    @property
+    def mode(self) -> str:
+        return "car"
+
+
+# these two should be different if routing by time
+    @property
+    def max_travel_cost(self) -> float:
+        return 50000
+
+    @property
+    def network_radius(self) -> float:
+        return self.max_travel_cost * 1.2
+
+    @property
+    def where_clause(self) -> str:
+        return """
         e.rail = 'no' AND e.highway IN (
             'motorway',
             'motorway_link',
@@ -67,7 +177,56 @@ CAR = {
             'residential'
         )
     """
-}
+
+    @property
+    def cost_query(self) -> str:
+        """Return distance-based or time-based cost SQL for cars."""
+        if self.route_by == "time":
+            return TIME_COST_SQL
+        return COST_SQL
+
+    @property
+    def join_clause(self) -> str:
+        """Extra JOINs for car routing SQL (time workflow hook)."""
+        if self.route_by == "time":
+            return ""
+        return ""
+
+
+class BikeMode(Mode):
+    """Cycling mode configuration."""
+
+    aliases = ("bike", "cycle")
+
+    @property
+    def mode(self) -> str:
+        return "bike"
+
+    @property
+    def max_travel_cost(self) -> float:
+        return 50000
+
+    @property
+    def network_radius(self) -> float:
+        return self.max_travel_cost * 1.2
+
+    @property
+    def where_clause(self) -> str:
+        return """
+        e.rail = 'no' AND e.highway NOT IN (
+            'motorway',
+            'motorway_link'
+            )
+    """
+
+
+def get_mode_config(mode: str, route_by: str = "distance") -> Mode:
+    """Return the mode configuration object from input mode string."""
+    mode_classes: tuple[type[Mode], ...] = (FootMode, CarMode, BikeMode)
+    for mode_class in mode_classes:
+        if mode_class.matches(mode):
+            return mode_class(route_by=route_by)
+    raise ValueError(f"Unknown mode: {mode}")
 
 
 ##### CLASSES & FUNCTIONS #####
@@ -160,6 +319,7 @@ class _Config(ctk.BaseConfig):
 
     output_path: pydantic.DirectoryPath
     mode: str
+    route_by: Literal["distance", "time"] = "distance"
     zones: Zones
     centroids: GeoFile
     database: DatabaseConfig
@@ -172,33 +332,9 @@ class _Config(ctk.BaseConfig):
         return folder
 
     @functools.cached_property
-    def mode_params(self) -> dict:
-        """Parameters for the given mode."""
-        if self.mode in ["foot", "walk"]:
-            return {
-                "mode": self.mode,
-                "max_travel_cost": 20000,  # this is in distance (meters) for walk / 20km
-                "network_radius": 20000 * 1.2,
-                "cost_query": FOOT["cost"],
-                "where_clause": FOOT["where"]
-            }
-        if self.mode in ["car", "drive"]:
-            return {
-                "mode": self.mode,
-                "max_travel_cost": 7200,  # this is in distance (meters) for car  / 50km
-                "network_radius": 50000 * 1.2,
-                "cost_query": CAR["cost"],
-                "where_clause": CAR["where"]
-            }
-        if self.mode in ["bike", "cycle"]:
-            return {
-                "mode": self.mode,
-                "max_travel_cost": 50000,  # this is in distance (meters) for bike  / 50km
-                "network_radius": 50000 * 1.2,
-                "cost_query": BIKE["cost"],
-                "where_clause": BIKE["where"]
-            }
-        raise ValueError(f"Unknown mode: {self.mode}")
+    def mode_config(self) -> Mode:
+        """Mode-specific parameters represented as a class instance."""
+        return get_mode_config(self.mode, self.route_by)
 
 
 def write_centroids_to_db(
@@ -234,7 +370,7 @@ def write_centroids_to_db(
 
 
 def create_network_costs(
-    mode_params: dict, zone_name: str, conn: sqlalchemy.Connection
+    mode_config: Mode, zone_name: str, conn: sqlalchemy.Connection
 ) -> None:
     """Function to create distance costs on the mrn network.
 
@@ -273,7 +409,7 @@ def create_network_costs(
                 FROM tfn.edge_table e
                 WHERE (e.source = n.nodeid
                 OR e.target = n.nodeid)
-                AND {mode_params["where_clause"]}
+                AND {mode_config.where_clause}
             )
             ORDER BY dist
             LIMIT 1
@@ -283,8 +419,8 @@ def create_network_costs(
 
     # Create isochrones
     isochrones_query = f"""
-        DROP TABLE IF EXISTS tfn.{mode_params["mode"]}_isochrones_{zone_name};
-        CREATE TABLE tfn.{mode_params["mode"]}_isochrones_{zone_name} AS
+        DROP TABLE IF EXISTS tfn.{mode_config.mode}_isochrones_{zone_name};
+        CREATE TABLE tfn.{mode_config.mode}_isochrones_{zone_name} AS
         SELECT * FROM tfn.node_centroids_{zone_name} n
         CROSS JOIN LATERAL pgr_drivingDistance(
             format('
@@ -292,27 +428,27 @@ def create_network_costs(
                 e.id,
                 e.source::int4 AS source,
                 e.target::int4 AS target,
-                {mode_params["cost_query"]}
+                {mode_config.cost_query}
             FROM tfn.edge_table e
-            {mode_params["join_clause"]}
+            {mode_config.join_clause}
             WHERE
-                {mode_params["where_clause"].replace("'", "''")}
+                {mode_config.where_clause.replace("'", "''")}
             AND
                 st_dwithin(
                     e.geometry,
                     st_geomfromtext(''%s'', %s),
-                    {mode_params["network_radius"]}
+                    {mode_config.network_radius}
                 )',
                 ST_AsText(n.geom),
                 ST_SRID(n.geom)
                 )::text,
             array[n.node_id],
-            {mode_params["max_travel_cost"]},
+            {mode_config.max_travel_cost},
             directed => true
             ) as route;
 
-        DROP TABLE IF EXISTS tfn.{mode_params["mode"]}_isochrones_centroids_{zone_name};
-        CREATE TABLE tfn.{mode_params["mode"]}_isochrones_centroids_{zone_name} AS
+        DROP TABLE IF EXISTS tfn.{mode_config.mode}_isochrones_centroids_{zone_name};
+        CREATE TABLE tfn.{mode_config.mode}_isochrones_centroids_{zone_name} AS
         SELECT 
             a.centroid_id as start_centroid,
             a.node_id as start_node,
@@ -327,7 +463,7 @@ def create_network_costs(
             b.centroid_id as target_centroid,
             b.dist as node_centroid_dist,
             b.geom
-        FROM tfn.{mode_params["mode"]}_isochrones_{zone_name} a
+        FROM tfn.{mode_config.mode}_isochrones_{zone_name} a
         INNER JOIN (
             SELECT * FROM tfn.node_centroids_{zone_name}
         ) b
@@ -559,6 +695,185 @@ def insert_network_costs(
     )
     conn.commit()
 
+# Functions for getting distance cost (aggregated) when routed by time
+def get_distance(
+    node: int,
+    pred_lookup: dict,
+    edge_distance_lookup: dict,
+    agg_distance: dict,
+) -> float:
+    """
+    Calculate cumulative distance from the origin to a node.
+
+    Distances already calculated are stored in agg_distance
+    and reused.
+    """
+
+    path = []
+    current = node
+
+    # Walk backwards until we find a node whose
+    # cumulative distance is already known (origin).
+    while current not in agg_distance:
+        path.append(current)
+        current = pred_lookup[current]
+
+    # Get the known cumulative distance
+    distance = agg_distance[current]
+
+    # Walk forwards through the stored path,
+    # aggregating and caching distances
+    while path:
+        current = path.pop()
+
+        distance += edge_distance_lookup[current]
+        agg_distance[current] = distance
+
+    return distance
+
+
+def calculate_agg_distances(
+    tree: pd.DataFrame,
+    start_vid: int,
+) -> pd.DataFrame:
+    """
+    Calculate distance along the fastest route for
+    every node in a shortest-path tree (pg_drivingDistance output).
+    """
+
+    pred_lookup = dict(
+        zip(tree["node"], tree["pred"])
+    )
+
+    edge_distance_lookup = dict(
+        zip(tree["node"], tree["edge_distance"])
+    )
+
+    agg_distance = {
+        start_vid: 0.0
+    }
+
+    tree["agg_distance"] = tree["node"].apply(
+        lambda node: get_distance(
+            node,
+            pred_lookup,
+            edge_distance_lookup,
+            agg_distance,
+        )
+    )
+
+    return tree
+
+def write_distance_per_origin(
+        network_costs: pd.DataFrame,
+        conn: sqlalchemy.engine.Connection,
+        table_name_isochrones: str,
+        table_name_costs: str
+) -> pd.DataFrame:
+    """
+    Loop through origins to calculate distance along the fastest route for each origin-destination pair.
+    Write to database.
+    """
+    overall_start = time.perf_counter()
+
+    origins = network_costs["start_vid"].unique()
+    for i, start_vid in enumerate(origins, start=1):
+        LOG.info("Processing start_vid %d (%d/%d)", start_vid, i, len(origins))
+
+        query_start = time.perf_counter()
+
+        # Retrieve the shortest-path tree (isochrones) for the current origin (start_vid)
+        query = f"""
+                SELECT
+                    start_vid,
+                    node,
+                    pred,
+                    edge,
+                    edge_distance,
+                    agg_cost
+                FROM {table_name_isochrones}
+                WHERE start_vid = {start_vid} -- ONE ORIGIN ONLY
+        """
+        tree = pd.read_sql(query, conn, params={"start_vid": start_vid})
+        tree = calculate_agg_distances(tree, start_vid)
+
+        # filter the tree to origin-destination pairs we are intested in
+        od = network_costs.loc[
+            network_costs["start_vid"] == start_vid,
+            [
+                "start_centroid",
+                "target_centroid",
+                "start_node",
+                "target_node",
+                "agg_cost"
+            ]
+        ].copy()
+        od = od.merge(
+            tree[["node", "agg_distance"]],
+            left_on="target_node",
+            right_on="node",
+            how="left"
+        )
+
+        output = od[
+            [
+                "start_centroid",
+                "target_centroid",
+                "start_node",
+                "target_node",
+                "agg_cost",
+                "agg_distance",
+            ]
+        ].copy()
+        output = output.rename(
+            columns={
+                "agg_cost": "travel_time_sec",
+                "agg_distance": "distance_m",
+            }
+        )
+        missing = output["distance_m"].isna().sum()
+        if missing:
+            LOG.warning(
+                "%d rows have NULL distance_m for start_vid %d",
+                missing,
+                start_vid,
+            )
+
+        # write output to final table
+        schema = table_name_costs.split(".")[0]
+        name = table_name_costs.split(".")[1]
+        output.to_sql(
+            name,
+            conn,
+            schema=schema,
+            if_exists="append",
+            index=False
+        )
+        conn.commit()
+
+        query_time = time.perf_counter() - query_start
+        elapsed = time.perf_counter() - overall_start
+        avg_time = elapsed / i
+        remaining = len(origins) - i
+        eta_sec = remaining * avg_time
+
+        del tree
+        del od
+        del output
+        gc.collect()
+
+        LOG.info(
+            "For %d: " \
+            "Query time: %.2f sec, Elapsed: %.2f sec, Avg time: %.2f sec, Remaining: %d, " \
+            "ETA: %.2f sec",
+            start_vid,
+            query_time,
+            elapsed,
+            avg_time,
+            remaining,
+            eta_sec,
+        )
+
 def create_cost_table(
     name: str,
     conn: sqlalchemy.engine.Connection,
@@ -587,6 +902,7 @@ def main() -> None:
 
     with ctk.LogHelper(_NAME, details, log_file=log_file):
         LOG.debug("Config\n%s", parameters.to_yaml())
+        mode_config = parameters.mode_config
 
         # Connect to DB
         engine = parameters.database.create_engine()
@@ -598,13 +914,13 @@ def main() -> None:
             LOG.info(
                 "Creating network costs on the database, this might take several hours."
             )
-            create_network_costs(parameters.mode_params, parameters.zones.name, conn)
+            create_network_costs(mode_config, parameters.zones.name, conn)
             # this takes about 2.5 hrs for Cumbria OA level 20km
             LOG.info("Finished creating network costs.")
 
             network_costs = gpd.read_postgis(
                 sqlalchemy.text(
-                    f"SELECT * FROM tfn.{parameters.mode}_isochrones_centroids_{
+                    f"SELECT * FROM tfn.{mode_config.mode}_isochrones_centroids_{
                         parameters.zones.name
                     }"
                 ),
@@ -613,14 +929,26 @@ def main() -> None:
             )
 
             # create and write to final table
-            final_table_name = f"tfn.{parameters.mode}_costs_{parameters.zones.name}_m"
+            final_table_name = (
+                f"tfn.{mode_config.mode}_costs_{parameters.zones.name}_meters"
+            )
             create_cost_table(final_table_name, conn)
-            insert_network_costs(network_costs.drop(columns=["geom"]), conn, final_table_name)
+            if mode_config.route_by == "time":
+                write_distance_per_origin(
+                    network_costs.drop(columns=["geom"]),
+                    conn,
+                    table_name_isochrones=f"tfn.{mode_config.mode}_isochrones_distance_{parameters.zones.name}",
+                    table_name_costs=final_table_name,
+                )
+            else:
+                insert_network_costs(
+                    network_costs.drop(columns=["geom"]), conn, final_table_name
+                )
 
             final_costs = pd.read_sql_table(
                 table_name = final_table_name.split(".")[1],
                 con=conn,
-                schema=final_table_name.split(".")[0]
+                schema=final_table_name.split(".", maxsplit=1)[0]
             )
 
             # Network matrix

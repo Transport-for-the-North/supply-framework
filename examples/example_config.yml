@@ -4,6 +4,10 @@ output_path: path\to\outputs
 mode: car
 # Options: foot | car | bike
 
+route_by: distance
+# Options: distance | time
+# Note: time is currently only supported for car mode.
+
 zones:
   name: name_zones
   path: path\to\zones.shp
