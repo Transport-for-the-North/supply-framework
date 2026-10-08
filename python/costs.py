@@ -768,7 +768,7 @@ def write_distance_per_origin(
     table_name_costs: str,
 ) -> pd.DataFrame:
     """
-    Loop through origins to calculate distance along the fastest route for each origin-destination pair.
+    Loop through origins to calculate distance along the fastest route for each OD pair.
     Write to database.
     """
     overall_start = time.perf_counter()
@@ -837,16 +837,21 @@ def write_distance_per_origin(
             )
 
         # write output to final table
-        schema = table_name_costs.split(".")[0]
-        name = table_name_costs.split(".")[1]
-        output.to_sql(name, conn, schema=schema, if_exists="append", index=False)
+        output.to_sql(
+            table_name_costs.split(".")[1],
+            conn,
+            schema=table_name_costs.split(".")[0],
+            if_exists="append",
+            index=False,
+        )
         conn.commit()
 
-        query_time = time.perf_counter() - query_start
-        elapsed = time.perf_counter() - overall_start
-        avg_time = elapsed / i
-        remaining = len(origins) - i
-        eta_sec = remaining * avg_time
+        timing_info = {
+            "query_time": time.perf_counter() - query_start,
+            "elapsed": time.perf_counter() - overall_start,
+        }
+        timing_info["avg_time"] = timing_info["elapsed"] / i
+        timing_info["remaining"] = len(origins) - i
 
         del tree
         del od
@@ -858,11 +863,11 @@ def write_distance_per_origin(
             "Query time: %.2f sec, Elapsed: %.2f sec, Avg time: %.2f sec, Remaining: %d, "
             "ETA: %.2f sec",
             start_vid,
-            query_time,
-            elapsed,
-            avg_time,
-            remaining,
-            eta_sec,
+            timing_info["query_time"],
+            timing_info["elapsed"],
+            timing_info["avg_time"],
+            timing_info["remaining"],
+            timing_info["remaining"] * timing_info["avg_time"],
         )
 
 
@@ -929,7 +934,8 @@ def main() -> None:
                 write_distance_per_origin(
                     network_costs.drop(columns=["geom"]),
                     conn,
-                    table_name_isochrones=f"tfn.{mode_config.mode}_isochrones_distance_{parameters.zones.name}",
+                    table_name_isochrones=f"tfn.{mode_config.mode}_isochrones_distance_ \
+                        {parameters.zones.name}",
                     table_name_costs=final_table_name,
                 )
             else:
