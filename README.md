@@ -2,6 +2,11 @@
 
 PostGIS based transport supply framework.
 
+> [!WARNING]  
+> This package is in an early stage of development so features may change or be removed.
+> If using this package it is recommended to set a specific version and check before
+> upgrading to a new version.
+
 ## Setup Local PostGresSQL Server
 
 Install PostGreSQL server locally and connect to the database,
