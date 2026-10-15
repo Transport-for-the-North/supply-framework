@@ -185,7 +185,7 @@ class _Config(ctk.BaseConfig):
         if self.mode in ["car", "drive"]:
             return {
                 "mode": self.mode,
-                "max_travel_cost": 7200,  # this is in distance (meters) for car  / 50km
+                "max_travel_cost": 50000,  # this is in distance (meters) for car  / 50km
                 "network_radius": 50000 * 1.2,
                 "cost_query": CAR["cost"],
                 "where_clause": CAR["where"]
@@ -294,7 +294,6 @@ def create_network_costs(
                 e.target::int4 AS target,
                 {mode_params["cost_query"]}
             FROM tfn.edge_table e
-            {mode_params["join_clause"]}
             WHERE
                 {mode_params["where_clause"].replace("'", "''")}
             AND
